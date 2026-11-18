@@ -17,6 +17,7 @@ import {
   saveRecord,
   softDeleteRecord,
 } from '../lib/db';
+import { generateQRMatrix } from '../lib/qr';
 import {
   addDaysISO,
   compressImageFile,
@@ -43,6 +44,7 @@ interface MembresPageProps {
   config: GymConfig;
   refreshTick: number;
   onNotify: (type: 'success' | 'error' | 'info', message: string) => void;
+  onOpenPublicJoin?: () => void;
 }
 
 const emptyMemberForm = (code: string): Partial<Membre> => ({
@@ -70,8 +72,10 @@ export const MembresPage: React.FC<MembresPageProps> = ({
   config,
   refreshTick,
   onNotify,
+  onOpenPublicJoin,
 }) => {
   const isReadOnly = user.role === 'coach';
+  const isAdmin = user.role === 'admin';
   const [membres, setMembres] = useState<Membre[]>([]);
   const [abonnements, setAbonnements] = useState<Abonnement[]>([]);
   const [forfaits, setForfaits] = useState<Forfait[]>([]);
@@ -82,7 +86,7 @@ export const MembresPage: React.FC<MembresPageProps> = ({
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<
-    'tous' | 'actif' | 'expiré' | 'suspendu' | 'expirant'
+    'tous' | 'actif' | 'en_attente' | 'expiré' | 'suspendu' | 'expirant'
   >('tous');
   const [viewMode, setViewMode] = useState<'cartes' | 'tableau'>('cartes');
 
@@ -108,13 +112,29 @@ export const MembresPage: React.FC<MembresPageProps> = ({
   const [cardMember, setCardMember] = useState<Membre | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Membre | null>(null);
 
+  // QR Code inscription à distance & Validation Admin
+  const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [publicBaseUrl, setPublicBaseUrl] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    const saved = localStorage.getItem('gympro_public_base_url');
+    return saved || window.location.origin;
+  });
+  const [validateTarget, setValidateTarget] = useState<Membre | null>(null);
+  const [validateCode, setValidateCode] = useState('GYM-0001');
+  const [validateForfaitId, setValidateForfaitId] = useState('');
+  const [validateIncludeFrais, setValidateIncludeFrais] = useState(false);
+  const [validateEncaisser, setValidateEncaisser] = useState(false);
+  const [validateMode, setValidateMode] = useState<ModePaiement>('espèces');
+  const [validateRef, setValidateRef] = useState('');
+  const [rejectTarget, setRejectTarget] = useState<Membre | null>(null);
+
   // Caméra pour prise de photo locale
   const [cameraOpen, setCameraOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const loadData = async () => {
-    const [m, a, f, c, p, pr, ms] = await Promise.all([
+    let [m, a, f, c, p, pr, ms] = await Promise.all([
       getAllRecords<Membre>('Membres'),
       getAllRecords<Abonnement>('Abonnements'),
       getAllRecords<Forfait>('Forfaits'),
@@ -123,6 +143,30 @@ export const MembresPage: React.FC<MembresPageProps> = ({
       getAllRecords<Presence>('Presences'),
       getAllRecords<Mesure>('Mesures'),
     ]);
+
+    // Récupère les nouvelles demandes soumises à distance via QR Code depuis le relais serveur
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      try {
+        const res = await fetch('/api/public-registration/pending', { cache: 'no-store' });
+        if (res.ok) {
+          const data = (await res.json()) as { ok?: boolean; items?: Membre[] };
+          const existingIds = new Set(m.map((x) => x.id));
+          let added = false;
+          for (const item of data.items || []) {
+            if (!existingIds.has(item.id)) {
+              await saveRecord<Membre>('Membres', { ...item });
+              added = true;
+            }
+          }
+          if (added) {
+            m = await getAllRecords<Membre>('Membres');
+          }
+        }
+      } catch {
+        // ignore offline / network error
+      }
+    }
+
     setMembres(m.sort((x, y) => x.code_membre.localeCompare(y.code_membre)));
     setAbonnements(a);
     setForfaits(f);
@@ -135,6 +179,40 @@ export const MembresPage: React.FC<MembresPageProps> = ({
   useEffect(() => {
     loadData();
   }, [refreshTick]);
+
+  // Synchronise les infos publiques & le pont Google Sheets côté serveur pour les scans QR distants
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.onLine || isReadOnly) return;
+    const activeList = forfaits
+      .filter((f) => f.actif === 1)
+      .map((f) => ({
+        id: f.id,
+        nom: f.nom,
+        prix: Number(f.prix),
+        devise: f.devise,
+        duree_jours: Number(f.duree_jours),
+      }));
+    fetch('/api/public-registration/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nom_gym: config.nom_gym,
+        adresse: config.adresse,
+        telephone: config.telephone,
+        apps_script_url: config.apps_script_url,
+        apps_script_key: config.apps_script_key,
+        forfaits: activeList,
+      }),
+    }).catch(() => {});
+  }, [
+    isReadOnly,
+    config.nom_gym,
+    config.adresse,
+    config.telephone,
+    config.apps_script_url,
+    config.apps_script_key,
+    forfaits,
+  ]);
 
   const stopCamera = () => {
     if (streamRef.current) {
@@ -214,11 +292,14 @@ export const MembresPage: React.FC<MembresPageProps> = ({
   const kpiStats = useMemo(() => {
     const alertDays = config.alerte_expiration_jours || 7;
     let actifs = 0;
+    let enAttente = 0;
     let expirant = 0;
     let alerteInactifs = 0;
     for (const m of membres) {
       if (m.statut === 'actif') actifs++;
+      else if (m.statut === 'en_attente') enAttente++;
       else alerteInactifs++;
+      if (m.statut === 'en_attente') continue;
       const memberAbos = abonnements
         .filter((a) => a.membre_id === m.id && a.statut === 'actif')
         .sort((a, b) => b.date_fin.localeCompare(a.date_fin));
@@ -230,6 +311,7 @@ export const MembresPage: React.FC<MembresPageProps> = ({
     return {
       total: membres.length,
       actifs,
+      enAttente,
       expirant,
       alerteInactifs,
     };
@@ -463,8 +545,187 @@ export const MembresPage: React.FC<MembresPageProps> = ({
 
   const statusTextClass = (statut: Membre['statut']) => {
     if (statut === 'actif') return 'text-emerald-600 dark:text-emerald-400';
+    if (statut === 'en_attente') return 'text-sky-600 dark:text-sky-400';
     if (statut === 'suspendu') return 'text-amber-600 dark:text-amber-400';
     return 'text-red-600 dark:text-red-400';
+  };
+
+  const formatMemberStatusLabel = (statut: Membre['statut']) =>
+    statut === 'en_attente' ? 'En attente' : statut;
+
+  const cleanBaseUrl = publicBaseUrl.trim().replace(/\/+$/, '') || (typeof window !== 'undefined' ? window.location.origin : '');
+  const registrationUrl = `${cleanBaseUrl}/?join=1`;
+  const qrMatrix = useMemo(() => generateQRMatrix(registrationUrl), [registrationUrl]);
+
+  const openValidateModal = async (m: Membre) => {
+    const nextCode = await getNextMemberCode();
+    setValidateTarget(m);
+    setValidateCode(nextCode);
+    setValidateForfaitId('');
+    setValidateIncludeFrais((config.frais_inscription || 0) > 0);
+    setValidateEncaisser(false);
+    setValidateMode('espèces');
+    setValidateRef('');
+  };
+
+  const handleConfirmValidate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateTarget || !isAdmin) return;
+
+    const finalCode = (validateCode || 'GYM-0001').trim().toUpperCase();
+    const dateVal = todayISO();
+    await saveRecord<Membre>('Membres', {
+      ...validateTarget,
+      code_membre: finalCode,
+      statut: 'actif',
+      date_inscription: validateTarget.date_inscription || dateVal,
+    });
+
+    const selectedF = activeForfaits.find((f) => f.id === validateForfaitId);
+    let createdAboId = '';
+    if (selectedF) {
+      const dateFin = addDaysISO(dateVal, Math.max(0, Number(selectedF.duree_jours) - 1));
+      const abo = await saveRecord<Abonnement>('Abonnements', {
+        membre_id: validateTarget.id,
+        forfait_id: selectedF.id,
+        date_debut: dateVal,
+        date_fin: dateFin,
+        prix_applique: Number(selectedF.prix),
+        statut: 'actif',
+      });
+      createdAboId = abo.id;
+    }
+
+    if (validateEncaisser) {
+      const devisePay = selectedF?.devise || config.devise_defaut;
+      const fraisConv = validateIncludeFrais
+        ? convertCurrency(
+            Math.max(0, Number(config.frais_inscription || 0)),
+            config.devise_defaut,
+            devisePay,
+            config.taux_change
+          )
+        : 0;
+      const totalPay = Math.round((fraisConv + (selectedF ? Number(selectedF.prix) : 0)) * 100) / 100;
+      if (totalPay > 0) {
+        const recu = await getNextReceiptNumber();
+        const notes: string[] = [];
+        if (fraisConv > 0) notes.push(`Frais d’inscription (${formatMoney(config.frais_inscription, config.devise_defaut)})`);
+        if (selectedF) notes.push(`Forfait ${selectedF.nom} (${formatMoney(selectedF.prix, selectedF.devise)})`);
+        await saveRecord<Paiement>('Paiements', {
+          membre_id: validateTarget.id,
+          abonnement_id: createdAboId,
+          date: dateVal,
+          montant: totalPay,
+          devise: devisePay,
+          mode: validateMode,
+          reference: validateRef.trim(),
+          note: notes.join(' + '),
+          recu_numero: recu,
+        });
+      }
+    }
+
+    await fetch('/api/public-registration/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: validateTarget.id }),
+    }).catch(() => {});
+
+    await logAction(
+      user.nom_utilisateur,
+      'Validation inscription QR',
+      `${finalCode} — ${validateTarget.prenom} ${validateTarget.nom}${selectedF ? ` (${selectedF.nom})` : ''}`
+    );
+
+    setValidateTarget(null);
+    await loadData();
+    onNotify('success', `Inscription validée : ${finalCode} est maintenant actif.`);
+  };
+
+  const handleConfirmReject = async () => {
+    if (!rejectTarget || !isAdmin) return;
+    await softDeleteRecord('Membres', rejectTarget.id);
+    await fetch('/api/public-registration/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: rejectTarget.id }),
+    }).catch(() => {});
+    await logAction(
+      user.nom_utilisateur,
+      'Refus inscription QR',
+      `${rejectTarget.code_membre} — ${rejectTarget.prenom} ${rejectTarget.nom}`
+    );
+    setRejectTarget(null);
+    await loadData();
+    onNotify('info', 'Demande d’inscription refusée et retirée.');
+  };
+
+  const handleDownloadQrPoster = () => {
+    const W = 900;
+    const H = 1120;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, W, H);
+
+    // Carte blanche centrale
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(60, 70, W - 120, H - 140, 32);
+    ctx.fill();
+
+    ctx.fillStyle = '#ea580c';
+    ctx.font = 'bold 26px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('PRÉ-INSCRIPTION EN LIGNE', W / 2, 145);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 40px Montserrat, Poppins, sans-serif';
+    ctx.fillText((config.nom_gym || 'GYMPRO FITNESS').toUpperCase(), W / 2, 200);
+
+    // QR Code
+    const qrDim = 540;
+    const qx = (W - qrDim) / 2;
+    const qy = 250;
+    const modSize = qrDim / qrMatrix.length;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(qx - 18, qy - 18, qrDim + 36, qrDim + 36);
+    ctx.fillStyle = '#0f172a';
+    qrMatrix.forEach((row, r) => {
+      row.forEach((cell, c) => {
+        if (cell) {
+          ctx.fillRect(
+            qx + c * modSize,
+            qy + r * modSize,
+            Math.ceil(modSize),
+            Math.ceil(modSize)
+          );
+        }
+      });
+    });
+
+    ctx.fillStyle = '#334155';
+    ctx.font = '600 24px Inter, sans-serif';
+    ctx.fillText('Scannez ce QR Code pour vous inscrire à distance', W / 2, 855);
+
+    ctx.fillStyle = '#d97706';
+    ctx.font = 'bold 20px Inter, sans-serif';
+    ctx.fillText('Validation requise par l’administrateur à la réception', W / 2, 900);
+
+    ctx.fillStyle = '#64748b';
+    ctx.font = '18px monospace';
+    ctx.fillText(registrationUrl.slice(0, 58), W / 2, 955);
+
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `qr-inscription-${(config.nom_gym || 'gym').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`;
+    a.click();
+    onNotify('success', 'Affiche QR Code téléchargée en PNG.');
   };
 
   return (
@@ -480,18 +741,56 @@ export const MembresPage: React.FC<MembresPageProps> = ({
           </p>
         </div>
         {!isReadOnly && (
-          <button
-            type="button"
-            onClick={openCreate}
-            title="Inscrire un nouveau membre avec frais d’inscription et forfait"
-            data-tooltip="Inscrire un nouveau membre"
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold transition-colors whitespace-nowrap self-start sm:self-auto"
-          >
-            <MaterialIcon name="person_add" className="w-4 h-4" />
-            Ajouter un membre
-          </button>
+          <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setQrModalOpen(true)}
+              title="Partager un QR Code permettant à un futur membre de s’inscrire à distance (validation admin requise)"
+              data-tooltip="Partager QR Code d’inscription"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20 text-orange-700 dark:text-orange-300 text-sm font-semibold transition-colors whitespace-nowrap"
+            >
+              <MaterialIcon name="qr_code_2" className="w-4 h-4" />
+              QR Code Inscription
+            </button>
+            <button
+              type="button"
+              onClick={openCreate}
+              title="Inscrire un nouveau membre avec frais d’inscription et forfait"
+              data-tooltip="Inscrire un nouveau membre"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold transition-colors whitespace-nowrap"
+            >
+              <MaterialIcon name="person_add" className="w-4 h-4" />
+              Ajouter un membre
+            </button>
+          </div>
         )}
       </div>
+
+      {kpiStats.enAttente > 0 && (
+        <div className="p-4 rounded-2xl bg-sky-500/10 border border-sky-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="w-10 h-10 rounded-xl bg-sky-500/20 text-sky-600 dark:text-sky-300 flex items-center justify-center shrink-0">
+              <MaterialIcon name="qr_code_2" className="w-5 h-5" />
+            </span>
+            <div>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                {kpiStats.enAttente} inscription(s) à distance en attente de vérification
+              </p>
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                Ces dossiers restent inactifs tant qu’un administrateur ne les a pas vérifiés et validés.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('en_attente')}
+            title="Afficher uniquement les inscriptions en attente de validation"
+            className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold whitespace-nowrap self-start sm:self-auto"
+          >
+            Voir les demandes ({kpiStats.enAttente})
+          </button>
+        </div>
+      )}
 
       {/* Cartes KPI récapitulatives */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -593,11 +892,12 @@ export const MembresPage: React.FC<MembresPageProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#151821] border border-slate-200 dark:border-[#262b38]">
+          <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] overflow-x-auto">
             {(
               [
                 ['tous', 'Tous'],
                 ['actif', 'Actifs'],
+                ['en_attente', `En attente (${kpiStats.enAttente})`],
                 ['expirant', 'Expirent bientôt'],
                 ['expiré', 'Expirés'],
                 ['suspendu', 'Suspendus'],
@@ -702,11 +1002,11 @@ export const MembresPage: React.FC<MembresPageProps> = ({
                   </button>
 
                   <span
-                    className={`text-xs font-semibold capitalize shrink-0 ${statusTextClass(
+                    className={`text-xs font-semibold shrink-0 ${statusTextClass(
                       m.statut
                     )}`}
                   >
-                    ● {m.statut}
+                    ● {formatMemberStatusLabel(m.statut)}
                   </span>
                 </div>
 
@@ -757,7 +1057,35 @@ export const MembresPage: React.FC<MembresPageProps> = ({
                     Dossier complet
                   </button>
 
-                  <div className="inline-flex items-center gap-1">
+                  <div className="inline-flex items-center gap-1 flex-wrap justify-end">
+                    {m.statut === 'en_attente' && (
+                      isAdmin ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openValidateModal(m)}
+                            title="Vérifier et activer cette inscription à distance"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors"
+                          >
+                            <MaterialIcon name="check_circle" className="w-3.5 h-3.5" />
+                            Valider
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRejectTarget(m)}
+                            title="Refuser cette demande d’inscription"
+                            aria-label="Refuser la demande"
+                            className="p-1.5 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                          >
+                            <MaterialIcon name="cancel" className="w-4 h-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <span className="px-2 py-1 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-300 text-[11px] font-medium">
+                          Validation admin requise
+                        </span>
+                      )
+                    )}
                     <button
                       type="button"
                       onClick={() => setCardMember(m)}
@@ -878,12 +1206,34 @@ export const MembresPage: React.FC<MembresPageProps> = ({
                         {formatDateFR(m.date_inscription)}
                       </td>
                       <td className="py-3 px-4">
-                        <span className={`text-xs font-semibold capitalize ${statusTextClass(m.statut)}`}>
-                          {m.statut}
+                        <span className={`text-xs font-semibold ${statusTextClass(m.statut)}`}>
+                          {formatMemberStatusLabel(m.statut)}
                         </span>
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="inline-flex items-center gap-1">
+                          {m.statut === 'en_attente' && isAdmin && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openValidateModal(m)}
+                                title="Valider et activer cette inscription à distance"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
+                              >
+                                <MaterialIcon name="check_circle" className="w-3.5 h-3.5" />
+                                Valider
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRejectTarget(m)}
+                                title="Refuser cette inscription"
+                                aria-label="Refuser la demande"
+                                className="p-2 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                              >
+                                <MaterialIcon name="cancel" className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
                           <button
                             type="button"
                             onClick={() => setCardMember(m)}
@@ -1157,6 +1507,7 @@ export const MembresPage: React.FC<MembresPageProps> = ({
                 className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm"
               >
                 <option value="actif">Actif</option>
+                <option value="en_attente">En attente (validation admin)</option>
                 <option value="expiré">Expiré</option>
                 <option value="suspendu">Suspendu</option>
               </select>
@@ -1819,6 +2170,313 @@ export const MembresPage: React.FC<MembresPageProps> = ({
             );
           })()}
       </PrintPortal>
+
+      {/* Modale Partage QR Code d'inscription à distance */}
+      <Modal
+        open={qrModalOpen}
+        onClose={() => setQrModalOpen(false)}
+        title="Partager le QR Code d’inscription à distance"
+        maxWidth="max-w-lg"
+      >
+        <div className="space-y-5">
+          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+            Partagez ce QR Code ou ce lien par WhatsApp, affiche ou réception. Toute personne peut
+            remplir son formulaire d’inscription où qu’elle soit, mais son dossier restera{' '}
+            <strong>inactif (En attente)</strong> tant que l’administrateur ne l’a pas validé.
+          </p>
+
+          <div className="flex flex-col items-center p-5 rounded-2xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-200 dark:border-[#262b38]">
+            <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm">
+              <svg
+                viewBox={`0 0 ${qrMatrix.length} ${qrMatrix.length}`}
+                className="w-52 h-52"
+                role="img"
+                aria-label="QR Code d’inscription à distance"
+              >
+                <rect width={qrMatrix.length} height={qrMatrix.length} fill="#ffffff" />
+                {qrMatrix.map((row, r) =>
+                  row.map((cell, c) =>
+                    cell ? (
+                      <rect key={`${r}-${c}`} x={c} y={r} width={1} height={1} fill="#0f172a" />
+                    ) : null
+                  )
+                )}
+              </svg>
+            </div>
+            <p className="mt-3 font-brand font-bold text-sm text-slate-900 dark:text-white">
+              {config.nom_gym}
+            </p>
+            <p className="mt-1 font-mono-num text-[11px] text-orange-600 dark:text-orange-400 break-all text-center">
+              {registrationUrl}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+              Adresse publique du site pour le QR Code
+            </label>
+            <input
+              type="url"
+              value={publicBaseUrl}
+              onChange={(e) => {
+                setPublicBaseUrl(e.target.value);
+                localStorage.setItem('gympro_public_base_url', e.target.value);
+              }}
+              placeholder="https://clavens-fitness-gympro.onrender.com"
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-xs font-mono-num"
+            />
+            {(publicBaseUrl.includes('ais-dev-') || publicBaseUrl.includes('localhost')) && (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-xl px-3 py-2">
+                <span>
+                  Lien privé détecté : utilisez votre adresse publique Render pour les téléphones externes.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const renderUrl = 'https://clavens-fitness-gympro.onrender.com';
+                    setPublicBaseUrl(renderUrl);
+                    localStorage.setItem('gympro_public_base_url', renderUrl);
+                  }}
+                  title="Utiliser le lien public permanent Render"
+                  className="font-semibold underline shrink-0"
+                >
+                  Utiliser le lien Render
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-[#262b38]">
+            {onOpenPublicJoin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQrModalOpen(false);
+                  onOpenPublicJoin();
+                }}
+                title="Aperçu du formulaire public d’inscription"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <MaterialIcon name="description" className="w-4 h-4" />
+                Tester le formulaire
+              </button>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2 ml-auto">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(registrationUrl);
+                    onNotify('success', 'Lien d’inscription copié dans le presse-papiers.');
+                  } catch {
+                    onNotify('info', registrationUrl);
+                  }
+                }}
+                title="Copier le lien d’inscription à partager"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <MaterialIcon name="content_copy" className="w-4 h-4" />
+                Copier lien
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  if (navigator.share) {
+                    try {
+                      await navigator.share({
+                        title: `Inscription — ${config.nom_gym}`,
+                        text: `Inscrivez-vous à ${config.nom_gym} en ligne (validation administrateur requise) :`,
+                        url: registrationUrl,
+                      });
+                      return;
+                    } catch {
+                      // annulé ou non supporté
+                    }
+                  }
+                  try {
+                    await navigator.clipboard.writeText(registrationUrl);
+                    onNotify('success', 'Lien prêt à partager (copié).');
+                  } catch {
+                    onNotify('info', registrationUrl);
+                  }
+                }}
+                title="Partager ce lien via WhatsApp, SMS ou autre application"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-orange-500/40 bg-orange-500/10 text-orange-700 dark:text-orange-300 text-xs font-semibold"
+              >
+                <MaterialIcon name="share" className="w-4 h-4" />
+                Partager
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadQrPoster}
+                title="Télécharger le QR Code d’inscription en image PNG imprimable"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold"
+              >
+                <MaterialIcon name="download" className="w-4 h-4" />
+                Télécharger PNG
+              </button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modale de vérification & validation Administrateur */}
+      <Modal
+        open={Boolean(validateTarget)}
+        onClose={() => setValidateTarget(null)}
+        title="Vérifier et valider l’inscription"
+        maxWidth="max-w-lg"
+      >
+        {validateTarget && (
+          <form onSubmit={handleConfirmValidate} className="space-y-4">
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-200 dark:border-[#262b38] flex items-start gap-3">
+              {validateTarget.photo ? (
+                <img
+                  src={validateTarget.photo}
+                  alt={validateTarget.prenom}
+                  className="w-14 h-14 rounded-xl object-cover shrink-0 border border-slate-300 dark:border-slate-700"
+                />
+              ) : (
+                <span className="w-14 h-14 rounded-xl bg-sky-500/15 text-sky-600 dark:text-sky-300 font-bold flex items-center justify-center shrink-0">
+                  {validateTarget.prenom.charAt(0)}
+                  {validateTarget.nom.charAt(0)}
+                </span>
+              )}
+              <div className="min-w-0 text-xs space-y-1">
+                <p className="font-display text-base font-bold text-slate-900 dark:text-white">
+                  {validateTarget.prenom} {validateTarget.nom}
+                </p>
+                <p className="text-slate-600 dark:text-slate-300 font-mono-num">
+                  Tél : {validateTarget.telephone || '—'} · Demande : {validateTarget.code_membre}
+                </p>
+                {validateTarget.adresse && (
+                  <p className="text-slate-500">Adresse : {validateTarget.adresse}</p>
+                )}
+                {validateTarget.notes_sante && (
+                  <p className="text-amber-700 dark:text-amber-300">
+                    Notes : {validateTarget.notes_sante}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Code membre officiel attribué
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={validateCode}
+                  onChange={(e) => setValidateCode(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm font-mono-num"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Forfait à activer (optionnel)
+                </label>
+                <select
+                  value={validateForfaitId}
+                  onChange={(e) => setValidateForfaitId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm"
+                >
+                  <option value="">Activer la fiche sans forfait pour l’instant</option>
+                  {activeForfaits.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.nom} — {formatMoney(f.prix, f.devise)} ({f.duree_jours} j)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-200 dark:border-[#262b38] space-y-2.5">
+              {(config.frais_inscription || 0) > 0 && (
+                <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={validateIncludeFrais}
+                    onChange={(e) => setValidateIncludeFrais(e.target.checked)}
+                    className="rounded border-slate-300 text-orange-600 focus:ring-orange-500"
+                  />
+                  Inclure les frais d’inscription ({formatMoney(config.frais_inscription, config.devise_defaut)})
+                </label>
+              )}
+
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={validateEncaisser}
+                  onChange={(e) => setValidateEncaisser(e.target.checked)}
+                  className="rounded border-slate-300 text-orange-600 focus:ring-orange-500"
+                />
+                Encaisser le paiement maintenant à la validation
+              </label>
+
+              {validateEncaisser && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <select
+                    value={validateMode}
+                    onChange={(e) => setValidateMode(e.target.value as ModePaiement)}
+                    className="px-3 py-2 rounded-xl bg-white dark:bg-[#151821] border border-slate-300 dark:border-[#262b38] text-xs"
+                  >
+                    <option value="espèces">Espèces</option>
+                    <option value="MonCash">MonCash</option>
+                    <option value="NatCash">NatCash</option>
+                    <option value="virement">Virement</option>
+                    <option value="carte">Carte</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={validateRef}
+                    onChange={(e) => setValidateRef(e.target.value)}
+                    placeholder="Référence paiement (optionnel)"
+                    className="px-3 py-2 rounded-xl bg-white dark:bg-[#151821] border border-slate-300 dark:border-[#262b38] text-xs"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setValidateTarget(null)}
+                title="Annuler la validation"
+                className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-sm font-medium"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                title="Confirmer la vérification et activer le membre"
+                className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold"
+              >
+                <MaterialIcon name="check_circle" className="w-4 h-4" />
+                Valider & Activer
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <ConfirmModal
+        open={Boolean(rejectTarget)}
+        onClose={() => setRejectTarget(null)}
+        onConfirm={handleConfirmReject}
+        title="Refuser l’inscription à distance"
+        message={
+          rejectTarget
+            ? `Voulez-vous refuser et supprimer la demande de ${rejectTarget.prenom} ${rejectTarget.nom} (${rejectTarget.code_membre}) ?`
+            : ''
+        }
+        confirmLabel="Refuser la demande"
+        danger
+      />
     </div>
   );
 };

@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+.gympro-relay-state.json
+dev-dist/

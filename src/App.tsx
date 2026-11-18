@@ -34,6 +34,7 @@ import { MembresPage } from './pages/MembresPage';
 import { PaiementsPage, RenewRequest } from './pages/PaiementsPage';
 import { ParametresPage } from './pages/ParametresPage';
 import { PresencesPage } from './pages/PresencesPage';
+import { PublicJoinPage } from './pages/PublicJoinPage';
 import { RapportsPage } from './pages/RapportsPage';
 import {
   CoachsPage,
@@ -73,6 +74,11 @@ export default function App() {
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [subscriptionAlerts, setSubscriptionAlerts] = useState<SubscriptionAlertItem[]>([]);
   const [renewRequest, setRenewRequest] = useState<RenewRequest | null>(null);
+  const [publicJoinMode, setPublicJoinMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('join') === '1';
+  });
 
   // Applique le thème clair/sombre et la palette de couleurs sur <html>
   useEffect(() => {
@@ -128,7 +134,7 @@ export default function App() {
 
       const alerts: SubscriptionAlertItem[] = [];
       for (const m of membres) {
-        if (m.statut === 'suspendu') continue;
+        if (m.statut === 'suspendu' || m.statut === 'en_attente') continue;
         const memberAbos = (abosByMembre.get(m.id) || []).sort((a, b) => {
           const cmp = String(b.date_fin || '').localeCompare(String(a.date_fin || ''));
           return cmp !== 0 ? cmp : String(b.created_at || '').localeCompare(String(a.created_at || ''));
@@ -195,6 +201,43 @@ export default function App() {
       unsub();
     };
   }, [refreshMeta]);
+
+  // Garde le relais serveur QR à jour dès qu'un administrateur ouvre l'application
+  useEffect(() => {
+    if (!user || user.role !== 'admin' || !navigator.onLine) return;
+    getAllRecords<Forfait>('Forfaits')
+      .then((forfaits) => {
+        const activeList = forfaits
+          .filter((f) => f.actif === 1)
+          .map((f) => ({
+            id: f.id,
+            nom: f.nom,
+            prix: Number(f.prix),
+            devise: f.devise,
+            duree_jours: Number(f.duree_jours),
+          }));
+        return fetch('/api/public-registration/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nom_gym: config.nom_gym,
+            adresse: config.adresse,
+            telephone: config.telephone,
+            apps_script_url: config.apps_script_url,
+            apps_script_key: config.apps_script_key,
+            forfaits: activeList,
+          }),
+        });
+      })
+      .catch(() => {});
+  }, [
+    user,
+    config.nom_gym,
+    config.adresse,
+    config.telephone,
+    config.apps_script_url,
+    config.apps_script_key,
+  ]);
 
   const handleSyncNow = useCallback(async () => {
     setIsSyncing(true);
@@ -422,6 +465,7 @@ export default function App() {
             config={config}
             refreshTick={refreshTick}
             onNotify={notify}
+            onOpenPublicJoin={() => setPublicJoinMode(true)}
           />
         );
       case 'paiements':
@@ -508,6 +552,28 @@ export default function App() {
         return <DashboardPage config={config} refreshTick={refreshTick} onNavigate={navigate} />;
     }
   };
+
+  if (publicJoinMode) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#0d0f14] dark:text-slate-100">
+        <MaterialIconSprite />
+        <PublicJoinPage
+          config={config}
+          onBackHome={() => {
+            setPublicJoinMode(false);
+            if (typeof window !== 'undefined' && window.location.search.includes('join=1')) {
+              window.history.replaceState(null, '', window.location.pathname);
+            }
+          }}
+          onNotify={notify}
+        />
+        <ToastContainer
+          toasts={toasts}
+          onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#0d0f14] dark:text-slate-100">

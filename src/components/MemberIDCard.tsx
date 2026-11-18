@@ -35,6 +35,8 @@ export const MemberIDCard: React.FC<MemberIDCardProps> = ({
       ? '#16a34a'
       : member.statut === 'suspendu'
       ? '#d97706'
+      : member.statut === 'en_attente'
+      ? '#0284c7'
       : '#dc2626';
 
   return (
@@ -281,6 +283,8 @@ export async function downloadMemberCardPNG(
       ? '#16a34a'
       : member.statut === 'suspendu'
       ? '#d97706'
+      : member.statut === 'en_attente'
+      ? '#0284c7'
       : '#dc2626';
   ctx.fillStyle = statusColor;
   drawRoundedRect(ctx, W - 210, 26, 174, 34, 8);
@@ -288,7 +292,11 @@ export async function downloadMemberCardPNG(
   ctx.fillStyle = '#ffffff';
   ctx.textAlign = 'center';
   ctx.font = 'bold 18px Inter, sans-serif';
-  ctx.fillText(member.statut.toUpperCase(), W - 123, 50);
+  ctx.fillText(
+    member.statut === 'en_attente' ? 'EN ATTENTE' : member.statut.toUpperCase(),
+    W - 123,
+    50
+  );
 
   ctx.textAlign = 'right';
   ctx.fillStyle = '#e2e8f0';

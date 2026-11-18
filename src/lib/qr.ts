@@ -63,13 +63,15 @@ const QR_VERSIONS: Record<
   2: { size: 25, dataCw: 34, ecCw: 10, align: [18] },
   3: { size: 29, dataCw: 55, ecCw: 15, align: [22] },
   4: { size: 33, dataCw: 80, ecCw: 20, align: [26] },
+  5: { size: 37, dataCw: 108, ecCw: 26, align: [30] },
 };
 
 function chooseVersion(byteLen: number): number {
   if (byteLen <= 17) return 1;
   if (byteLen <= 32) return 2;
   if (byteLen <= 53) return 3;
-  return 4;
+  if (byteLen <= 78) return 4;
+  return 5;
 }
 
 function buildDataCodewords(bytes: Uint8Array, version: number): Uint8Array {
@@ -113,7 +115,7 @@ function buildDataCodewords(bytes: Uint8Array, version: number): Uint8Array {
 
 export function generateQRMatrix(text: string): boolean[][] {
   const encoder = new TextEncoder();
-  const rawBytes = encoder.encode(text.slice(0, 78));
+  const rawBytes = encoder.encode(text.slice(0, 106));
   const version = chooseVersion(rawBytes.length);
   const spec = QR_VERSIONS[version];
   const size = spec.size;

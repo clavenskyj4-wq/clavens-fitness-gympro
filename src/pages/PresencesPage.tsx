@@ -65,6 +65,16 @@ export const PresencesPage: React.FC<PresencesPageProps> = ({
       return;
     }
 
+    if (membre.statut === 'en_attente') {
+      setBanner({
+        allowed: false,
+        membre,
+        title: 'ACCÈS REFUSÉ — Inscription en attente',
+        detail: 'Ce dossier doit être vérifié et validé par l’administrateur avant activation.',
+      });
+      return;
+    }
+
     // Cherche le dernier abonnement
     const memberAbos = abonnements
       .filter((a) => a.membre_id === membre.id && a.statut !== 'annulé')

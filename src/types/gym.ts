@@ -28,7 +28,7 @@ export interface Membre extends BaseRecord {
   objectif: string;
   notes_sante: string;
   date_inscription: string; // YYYY-MM-DD
-  statut: 'actif' | 'expiré' | 'suspendu';
+  statut: 'actif' | 'expiré' | 'suspendu' | 'en_attente';
   coach_id?: string;
   tarif_coach?: number;
 }
