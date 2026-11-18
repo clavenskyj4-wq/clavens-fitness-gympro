@@ -265,57 +265,16 @@ async function sendApprovalNotificationEmail(params: {
       : rawSmtpPass;
   const parsedPort = Number(process.env.SMTP_PORT || 465);
   const smtpPort = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 465;
+  const resendKey = (process.env.RESEND_API_KEY || '').trim();
+  const hasAppsScript = Boolean(relayState.apps_script_url && relayState.apps_script_key);
+  const hasSmtp = Boolean(smtpUser && smtpPass);
+  const isRender = Boolean(process.env.RENDER);
 
-  if (smtpUser && smtpPass) {
-    const portsToTry = smtpHost.includes('gmail')
-      ? Array.from(new Set([smtpPort, smtpPort === 465 ? 587 : 465]))
-      : [smtpPort];
-    let lastSmtpErr = '';
+  const errors: string[] = [];
+  let hadSmtpTimeout = false;
 
-    for (const port of portsToTry) {
-      try {
-        const transporter = nodemailer.createTransport({
-          host: smtpHost,
-          port,
-          secure: port === 465,
-          requireTLS: port === 587,
-          auth: { user: smtpUser, pass: smtpPass },
-          connectionTimeout: 7000,
-          greetingTimeout: 7000,
-          socketTimeout: 10000,
-          tls: { minVersion: 'TLSv1.2' },
-        });
-        await transporter.sendMail({
-          from: `"${relayState.nom_gym || 'GymPro'}" <${smtpUser}>`,
-          to,
-          subject: params.subject,
-          text: params.textBody,
-          html: params.htmlBody,
-        });
-        return recordEmailLog({
-          to,
-          subject: params.subject,
-          channel: 'smtp',
-          status: 'sent',
-          detail: `Envoyé via SMTP (${smtpHost}:${port}) à ${to}.`,
-        });
-      } catch (err) {
-        lastSmtpErr = err instanceof Error ? err.message : 'Erreur SMTP inconnue.';
-      }
-    }
-
-    if (!relayState.apps_script_url || !relayState.apps_script_key) {
-      return recordEmailLog({
-        to,
-        subject: params.subject,
-        channel: 'smtp',
-        status: 'failed',
-        detail: `Échec SMTP : ${lastSmtpErr}`,
-      });
-    }
-  }
-
-  if (relayState.apps_script_url && relayState.apps_script_key) {
+  const tryAppsScript = async (): Promise<EmailNotificationLog | null> => {
+    if (!hasAppsScript) return null;
     try {
       const upstream = await fetch(relayState.apps_script_url, {
         method: 'POST',
@@ -339,39 +298,28 @@ async function sendApprovalNotificationEmail(params: {
             subject: params.subject,
             channel: 'apps_script',
             status: 'sent',
-            detail: `Envoyé via Google Apps Script (MailApp) à ${to}.`,
+            detail: `Envoyé via Google Apps Script (HTTPS / MailApp) à ${to}.`,
           });
         }
-        return recordEmailLog({
-          to,
-          subject: params.subject,
-          channel: 'apps_script',
-          status: 'failed',
-          detail:
+        errors.push(
+          `Apps Script : ${
             parsed.error ||
-            'Mettez à jour votre script Google Apps Script avec la dernière version de Code.gs (action send_email).',
-        });
+            'mettez à jour Code.gs (action send_email) et redéployez une nouvelle version'
+          }`
+        );
+        return null;
       }
-      return recordEmailLog({
-        to,
-        subject: params.subject,
-        channel: 'apps_script',
-        status: 'failed',
-        detail: `Réponse inattendue de Google Apps Script (HTTP ${upstream.status}).`,
-      });
+      errors.push(`Apps Script : réponse HTTP ${upstream.status}`);
     } catch (err) {
-      return recordEmailLog({
-        to,
-        subject: params.subject,
-        channel: 'apps_script',
-        status: 'failed',
-        detail: err instanceof Error ? err.message : 'Erreur relais Google Apps Script.',
-      });
+      errors.push(
+        `Apps Script : ${err instanceof Error ? err.message : 'erreur réseau'}`
+      );
     }
-  }
+    return null;
+  };
 
-  const resendKey = (process.env.RESEND_API_KEY || '').trim();
-  if (resendKey) {
+  const tryResend = async (): Promise<EmailNotificationLog | null> => {
+    if (!resendKey) return null;
     try {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -393,35 +341,98 @@ async function sendApprovalNotificationEmail(params: {
           subject: params.subject,
           channel: 'resend',
           status: 'sent',
-          detail: `Envoyé via Resend API à ${to}.`,
+          detail: `Envoyé via Resend API (HTTPS) à ${to}.`,
         });
       }
       const errTxt = await res.text();
-      return recordEmailLog({
-        to,
-        subject: params.subject,
-        channel: 'resend',
-        status: 'failed',
-        detail: `Échec Resend : ${errTxt.slice(0, 160)}`,
-      });
+      errors.push(`Resend : ${errTxt.slice(0, 140)}`);
     } catch (err) {
-      return recordEmailLog({
-        to,
-        subject: params.subject,
-        channel: 'resend',
-        status: 'failed',
-        detail: err instanceof Error ? err.message : 'Erreur Resend API.',
-      });
+      errors.push(`Resend : ${err instanceof Error ? err.message : 'erreur réseau'}`);
     }
+    return null;
+  };
+
+  const trySmtp = async (): Promise<EmailNotificationLog | null> => {
+    if (!hasSmtp) return null;
+    const portsToTry = smtpHost.includes('gmail')
+      ? Array.from(new Set([smtpPort, smtpPort === 465 ? 587 : 465]))
+      : [smtpPort];
+    let lastSmtpErr = '';
+
+    for (const port of portsToTry) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port,
+          secure: port === 465,
+          requireTLS: port === 587,
+          auth: { user: smtpUser, pass: smtpPass },
+          family: 4,
+          connectionTimeout: 3500,
+          greetingTimeout: 3500,
+          socketTimeout: 5000,
+          tls: { minVersion: 'TLSv1.2' },
+        } as Parameters<typeof nodemailer.createTransport>[0]);
+        await transporter.sendMail({
+          from: `"${relayState.nom_gym || 'GymPro'}" <${smtpUser}>`,
+          to,
+          subject: params.subject,
+          text: params.textBody,
+          html: params.htmlBody,
+        });
+        return recordEmailLog({
+          to,
+          subject: params.subject,
+          channel: 'smtp',
+          status: 'sent',
+          detail: `Envoyé via SMTP (${smtpHost}:${port}) à ${to}.`,
+        });
+      } catch (err) {
+        lastSmtpErr = err instanceof Error ? err.message : 'Erreur SMTP inconnue.';
+        if (/timeout|timed out|ETIMEDOUT/i.test(lastSmtpErr)) {
+          hadSmtpTimeout = true;
+        }
+      }
+    }
+
+    if (lastSmtpErr) {
+      errors.push(`SMTP : ${lastSmtpErr}`);
+    }
+    return null;
+  };
+
+  // Sur Render (plan gratuit), les ports SMTP sortants 25/465/587 sont bloqués :
+  // on priorise donc les relais HTTPS (port 443) Google Apps Script et Resend.
+  const order = isRender
+    ? [tryAppsScript, tryResend, trySmtp]
+    : [trySmtp, tryAppsScript, tryResend];
+
+  for (const attempt of order) {
+    const sent = await attempt();
+    if (sent) return sent;
   }
+
+  if (!hasSmtp && !hasAppsScript && !resendKey) {
+    return recordEmailLog({
+      to,
+      subject: params.subject,
+      channel: 'none',
+      status: 'unconfigured',
+      detail:
+        'Aucun relais email actif : configurez Google Apps Script (APPS_SCRIPT_URL + APPS_SCRIPT_KEY) ou RESEND_API_KEY sur Render.',
+    });
+  }
+
+  const hint = hadSmtpTimeout
+    ? ' Render gratuit bloque les ports SMTP (465/587) — activez le relais HTTPS Google Apps Script (gratuit) ou Resend.'
+    : '';
 
   return recordEmailLog({
     to,
     subject: params.subject,
-    channel: 'none',
-    status: 'unconfigured',
-    detail:
-      'Aucun transport email configuré sur le serveur (ajoutez SMTP_USER + SMTP_PASS sur Render, ou connectez Google Apps Script avec le nouveau Code.gs).',
+    channel: hasAppsScript ? 'apps_script' : resendKey ? 'resend' : 'smtp',
+    status: 'failed',
+    detail: `${errors.join(' | ')}${hint}`,
   });
 }
 
@@ -570,8 +581,13 @@ async function startServer() {
   app.get('/api/access/status', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     const deviceId = String(req.query.deviceId || '').trim().slice(0, 128);
+    const shortCode = deviceId.slice(0, 14).toUpperCase();
     const existing = deviceId
-      ? relayState.accessRequests.find((r) => r.deviceId === deviceId) || null
+      ? relayState.accessRequests.find(
+          (r) =>
+            r.deviceId === deviceId ||
+            (r.deviceId.length <= 16 && shortCode.startsWith(r.deviceId.toUpperCase()))
+        ) || null
       : null;
 
     res.json({
@@ -615,7 +631,12 @@ async function startServer() {
 
       const now = new Date().toISOString();
       const userAgent = String(req.headers['user-agent'] || '').slice(0, 180);
-      const existing = relayState.accessRequests.find((r) => r.deviceId === deviceId);
+      const shortCode = deviceId.slice(0, 14).toUpperCase();
+      const existing = relayState.accessRequests.find(
+        (r) =>
+          r.deviceId === deviceId ||
+          (r.deviceId.length <= 16 && shortCode.startsWith(r.deviceId.toUpperCase()))
+      );
 
       if (existing) {
         if (existing.status === 'approved') {
@@ -736,6 +757,8 @@ async function startServer() {
       emailNotificationsEnabled: relayState.emailNotificationsEnabled,
       smtpConfigured: isSmtpConfigured(),
       appsScriptConfigured: Boolean(relayState.apps_script_url && relayState.apps_script_key),
+      resendConfigured: Boolean((process.env.RESEND_API_KEY || '').trim()),
+      isRenderHost: Boolean(process.env.RENDER),
       emailLogs: relayState.emailLogs,
     });
   });
@@ -814,7 +837,13 @@ async function startServer() {
       return;
     }
     const now = new Date().toISOString();
-    const existing = relayState.accessRequests.find((r) => r.deviceId === deviceId);
+    const upperCode = deviceId.toUpperCase();
+    const existing = relayState.accessRequests.find(
+      (r) =>
+        r.deviceId === deviceId ||
+        r.deviceId.toUpperCase().startsWith(upperCode) ||
+        (r.deviceId.length <= 16 && upperCode.startsWith(r.deviceId.toUpperCase()))
+    );
     if (existing) {
       existing.status = 'approved';
       existing.updatedAt = now;

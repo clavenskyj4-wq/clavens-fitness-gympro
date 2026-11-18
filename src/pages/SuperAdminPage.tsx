@@ -95,9 +95,13 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
   const [emailNotificationsEnabled, setEmailNotificationsEnabled] = useState(true);
   const [smtpConfigured, setSmtpConfigured] = useState(false);
   const [appsScriptConfigured, setAppsScriptConfigured] = useState(false);
+  const [resendConfigured, setResendConfigured] = useState(false);
+  const [isRenderHost, setIsRenderHost] = useState(false);
   const [emailLogs, setEmailLogs] = useState<EmailNotificationLogItem[]>([]);
   const [savingNotif, setSavingNotif] = useState(false);
   const [testingNotif, setTestingNotif] = useState(false);
+  const [copyingScript, setCopyingScript] = useState(false);
+  const [manualDeviceCode, setManualDeviceCode] = useState('');
 
   // Modale de modification des identifiants Super Admin
   const [credsModalOpen, setCredsModalOpen] = useState(false);
@@ -133,6 +137,8 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
           emailNotificationsEnabled?: boolean;
           smtpConfigured?: boolean;
           appsScriptConfigured?: boolean;
+          resendConfigured?: boolean;
+          isRenderHost?: boolean;
           emailLogs?: EmailNotificationLogItem[];
         };
         if (res.status === 401) {
@@ -154,6 +160,8 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
         }
         setSmtpConfigured(Boolean(data.smtpConfigured));
         setAppsScriptConfigured(Boolean(data.appsScriptConfigured));
+        setResendConfigured(Boolean(data.resendConfigured));
+        setIsRenderHost(Boolean(data.isRenderHost));
         setEmailLogs(Array.isArray(data.emailLogs) ? data.emailLogs : []);
 
         if (!data.appsScriptConfigured) {
@@ -372,6 +380,45 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
     }
   };
 
+  const handleAuthorizeManualCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = manualDeviceCode.trim().toUpperCase();
+    if (cleaned.length < 6) {
+      onNotify('error', 'Saisissez le code appareil complet affiché à l’écran (ex. GP-D4EF60D0-32).');
+      return;
+    }
+    setBusyId('manual-device');
+    try {
+      const res = await fetch('/api/super-admin/authorize-device', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          deviceId: cleaned,
+          nomComplet: `Appareil pré-autorisé (${cleaned})`,
+          telephone: 'Validation manuelle',
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        requests?: AccessRequestItem[];
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Autorisation impossible.');
+      }
+      if (Array.isArray(data.requests)) setRequests(data.requests);
+      setManualDeviceCode('');
+      onNotify('success', `Appareil ${cleaned} autorisé. Actualisez l’autre fenêtre pour vous connecter.`);
+    } catch (err) {
+      onNotify('error', err instanceof Error ? err.message : 'Erreur serveur.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleDecision = async (
     id: string,
     action: 'approve' | 'reject' | 'revoke' | 'pending' | 'delete'
@@ -469,6 +516,80 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
       onNotify('success', 'Lien privé Super Admin copié. Gardez-le confidentiel.');
     } catch {
       onNotify('info', `Lien privé : ${privateUrl}`);
+    }
+  };
+
+  const getCustomizedCodeGs = async (): Promise<{ scriptText: string; hasKey: boolean }> => {
+    const res = await fetch('/apps-script/Code.gs', { cache: 'no-store' });
+    if (!res.ok) {
+      throw new Error('Impossible de charger le modèle Code.gs local.');
+    }
+    let scriptText = await res.text();
+    let hasKey = false;
+    try {
+      const localCfg = await getGymConfig();
+      const cleanKey = localCfg.apps_script_key.trim();
+      if (cleanKey) {
+        const escapedKey = cleanKey.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        scriptText = scriptText.replace(
+          "const DEFAULT_SECRET_KEY = 'GYMPRO-CLE-SECRETE-A-CHANGER';",
+          `const DEFAULT_SECRET_KEY = '${escapedKey}';`
+        );
+        hasKey = true;
+      }
+    } catch {
+      // ignore IndexedDB unavailability
+    }
+    return { scriptText, hasKey };
+  };
+
+  const handleCopyCodeGs = async () => {
+    setCopyingScript(true);
+    try {
+      const { scriptText, hasKey } = await getCustomizedCodeGs();
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(scriptText);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = scriptText;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      onNotify(
+        'success',
+        hasKey
+          ? 'Code.gs copié avec votre clé secrète intégrée.'
+          : 'Code.gs copié dans le presse-papiers. Pensez à garder votre clé secrète.'
+      );
+    } catch (err) {
+      onNotify('error', err instanceof Error ? err.message : 'Impossible de copier Code.gs.');
+    } finally {
+      setCopyingScript(false);
+    }
+  };
+
+  const handleDownloadCodeGs = async () => {
+    try {
+      const { scriptText, hasKey } = await getCustomizedCodeGs();
+      const blob = new Blob([scriptText], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Code.gs';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      onNotify(
+        'success',
+        hasKey ? 'Code.gs téléchargé avec votre clé secrète.' : 'Fichier Code.gs téléchargé.'
+      );
+    } catch (err) {
+      onNotify('error', err instanceof Error ? err.message : 'Impossible de télécharger Code.gs.');
     }
   };
 
@@ -663,6 +784,16 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
 
             <button
               type="button"
+              onClick={onBackHome}
+              title="Aller directement vers l’application GymPro (accueil / connexion)"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
+            >
+              <MaterialIcon name="arrow_forward" className="w-4 h-4" />
+              <span className="hidden sm:inline">Ouvrir l’app</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleLogoutSuperAdmin}
               title="Fermer la session Super Admin"
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-red-600 dark:hover:bg-red-700 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
@@ -676,82 +807,112 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
         {/* Bandeau de gouvernance + activation de la barrière avant connexion */}
-        <section className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2.5 text-sm font-semibold text-slate-900 dark:text-white">
-              <MaterialIcon
-                name={gateEnabled ? 'verified_user' : 'warning'}
-                className={`w-5 h-5 ${
-                  gateEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-500'
-                }`}
-              />
-              <span>
-                Approbation obligatoire avant connexion :{' '}
-                <span
-                  className={
-                    gateEnabled
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-amber-600 dark:text-amber-400'
-                  }
-                >
-                  {gateEnabled ? 'Activée' : 'Désactivée'}
+        <section className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-4 sm:p-5 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2.5 text-sm font-semibold text-slate-900 dark:text-white">
+                <MaterialIcon
+                  name={gateEnabled ? 'verified_user' : 'warning'}
+                  className={`w-5 h-5 ${
+                    gateEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-500'
+                  }`}
+                />
+                <span>
+                  Approbation obligatoire avant connexion :{' '}
+                  <span
+                    className={
+                      gateEnabled
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    }
+                  >
+                    {gateEnabled ? 'Activée' : 'Désactivée'}
+                  </span>
                 </span>
-              </span>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
+                {gateEnabled
+                  ? 'Toute personne qui reçoit le lien partagé doit soumettre une demande et obtenir votre validation ici avant d’accéder à l’écran de connexion.'
+                  : 'Attention : les personnes disposant du lien peuvent accéder directement à l’écran de connexion sans approbation préalable.'}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-mono-num">
+                Connecté en tant que {adminUsername} · ID de ce navigateur : {currentDeviceId.slice(0, 14).toUpperCase()}
+                {updatedAt ? ` · MàJ identifiants : ${formatDateTimeFR(updatedAt)}` : ''}
+              </p>
             </div>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
-              {gateEnabled
-                ? 'Toute personne qui reçoit le lien partagé doit soumettre une demande et obtenir votre validation ici avant d’accéder à l’écran de connexion.'
-                : 'Attention : les personnes disposant du lien peuvent accéder directement à l’écran de connexion sans approbation préalable.'}
-            </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 font-mono-num">
-              Connecté en tant que {adminUsername} · Cet espace privé n’est jamais inclus dans les liens de partage
-              {updatedAt ? ` · MàJ identifiants : ${formatDateTimeFR(updatedAt)}` : ''}
-            </p>
-          </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            {!isCurrentDeviceApproved && (
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              {!isCurrentDeviceApproved && (
+                <button
+                  type="button"
+                  onClick={handleAuthorizeCurrentDevice}
+                  disabled={busyId === 'current-device'}
+                  title="Autoriser immédiatement votre propre navigateur pour accéder à l’application"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-60"
+                >
+                  <MaterialIcon name="devices" className="w-4 h-4" />
+                  <span>Autoriser cet appareil</span>
+                </button>
+              )}
+
               <button
                 type="button"
-                onClick={handleAuthorizeCurrentDevice}
-                disabled={busyId === 'current-device'}
-                title="Autoriser immédiatement votre propre navigateur pour accéder à l’application"
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-60"
+                onClick={handleCopyPrivateUrl}
+                title="Copier le lien confidentiel d’accès à votre espace Super Admin"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 dark:border-[#262b38] bg-slate-50 dark:bg-[#0d0f14] hover:bg-slate-100 dark:hover:bg-[#1b202c] text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0"
               >
-                <MaterialIcon name="devices" className="w-4 h-4" />
-                <span>Autoriser cet appareil</span>
+                <MaterialIcon name="content_copy" className="w-4 h-4" />
+                <span>Copier lien privé</span>
               </button>
-            )}
 
-            <button
-              type="button"
-              onClick={handleCopyPrivateUrl}
-              title="Copier le lien confidentiel d’accès à votre espace Super Admin"
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 dark:border-[#262b38] bg-slate-50 dark:bg-[#0d0f14] hover:bg-slate-100 dark:hover:bg-[#1b202c] text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0"
-            >
-              <MaterialIcon name="content_copy" className="w-4 h-4" />
-              <span>Copier lien privé</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleToggleGate}
-              disabled={togglingGate}
-              title={
-                gateEnabled
-                  ? 'Désactiver temporairement le contrôle avant connexion'
-                  : 'Activer l’approbation obligatoire avant connexion'
-              }
-              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-60 ${
-                gateEnabled
-                  ? 'border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20'
-                  : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-              }`}
-            >
-              <MaterialIcon name={gateEnabled ? 'lock' : 'verified_user'} className="w-4 h-4" />
-              <span>{gateEnabled ? 'Désactiver le filtre' : 'Activer le filtre'}</span>
-            </button>
+              <button
+                type="button"
+                onClick={handleToggleGate}
+                disabled={togglingGate}
+                title={
+                  gateEnabled
+                    ? 'Désactiver temporairement le contrôle avant connexion'
+                    : 'Activer l’approbation obligatoire avant connexion'
+                }
+                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-60 ${
+                  gateEnabled
+                    ? 'border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                }`}
+              >
+                <MaterialIcon name={gateEnabled ? 'lock' : 'verified_user'} className="w-4 h-4" />
+                <span>{gateEnabled ? 'Désactiver le filtre' : 'Activer le filtre'}</span>
+              </button>
+            </div>
           </div>
+
+          <form
+            onSubmit={handleAuthorizeManualCode}
+            className="pt-3 border-t border-slate-200 dark:border-[#262b38] flex flex-col sm:flex-row sm:items-center gap-2.5"
+          >
+            <span className="text-xs text-slate-600 dark:text-slate-400 shrink-0">
+              Autoriser un autre navigateur / téléphone par son code :
+            </span>
+            <div className="flex flex-1 items-center gap-2">
+              <input
+                type="text"
+                value={manualDeviceCode}
+                onChange={(e) => setManualDeviceCode(e.target.value)}
+                placeholder="ex. GP-D4EF60D0-32"
+                aria-label="Code appareil à autoriser"
+                className="flex-1 max-w-xs px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-xs font-mono-num uppercase text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+              />
+              <button
+                type="submit"
+                disabled={busyId === 'manual-device'}
+                title="Autoriser immédiatement cet appareil à partir de son code affiché"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-emerald-600 dark:hover:bg-emerald-700 text-white text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-60"
+              >
+                <MaterialIcon name="check_circle" className="w-3.5 h-3.5" />
+                <span>Autoriser ce code</span>
+              </button>
+            </div>
+          </form>
         </section>
 
         {/* Grille des 4 indicateurs clés (style SaaS flat 1px border, tabular-nums) */}
@@ -802,11 +963,15 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
                 <span>Notifications Email d’Approbation</span>
                 <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
                   ·{' '}
-                  {smtpConfigured
+                  {appsScriptConfigured
+                    ? 'Relais Google Apps Script (HTTPS) prêt'
+                    : resendConfigured
+                    ? 'Relais Resend API (HTTPS) prêt'
+                    : smtpConfigured && isRenderHost
+                    ? 'SMTP configuré (bloqué sur Render gratuit sans relais HTTPS)'
+                    : smtpConfigured
                     ? 'Canal SMTP Gmail prêt'
-                    : appsScriptConfigured
-                    ? 'Relais Google Apps Script actif'
-                    : 'En attente de relais (SMTP Render ou Code.gs)'}
+                    : 'En attente de relais (Apps Script ou Resend)'}
                 </span>
               </div>
               <p className="text-xs text-slate-600 dark:text-slate-400">
@@ -862,17 +1027,48 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
             </div>
           </div>
 
-          {!smtpConfigured && !appsScriptConfigured && (
-            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-800 dark:text-amber-200 space-y-1">
+          {(!appsScriptConfigured &&
+            !resendConfigured &&
+            (!smtpConfigured ||
+              isRenderHost ||
+              emailLogs.some((l) => l.status === 'failed' && /timeout/i.test(l.detail)))) && (
+            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-800 dark:text-amber-200 space-y-1.5">
               <p className="font-semibold">
-                Relais d’envoi email non encore activé sur le serveur
+                {emailLogs.some((l) => l.status === 'failed' && /timeout/i.test(l.detail)) ||
+                isRenderHost
+                  ? 'Render gratuit bloque les ports SMTP (465/587) — activez le relais HTTPS gratuit'
+                  : 'Relais d’envoi email non encore activé sur le serveur'}
               </p>
               <p className="opacity-90">
-                Pour recevoir les emails sur {notificationEmail}, ajoutez{' '}
-                <code className="font-mono-num font-semibold">SMTP_USER</code> +{' '}
-                <code className="font-mono-num font-semibold">SMTP_PASS</code> (mot de passe d’application Gmail) dans les variables d’environnement Render, ou mettez à jour votre script Google Apps Script avec le fichier{' '}
-                <code className="font-mono-num font-semibold">public/apps-script/Code.gs</code>.
+                Pour envoyer les alertes vers {notificationEmail} par HTTPS (port 443, jamais bloqué par Render) :{' '}
+                1) mettez à jour votre projet Google Apps Script avec{' '}
+                <code className="font-mono-num font-semibold">public/apps-script/Code.gs</code>{' '}
+                puis redéployez une nouvelle version ;{' '}
+                2) ajoutez <code className="font-mono-num font-semibold">APPS_SCRIPT_URL</code> +{' '}
+                <code className="font-mono-num font-semibold">APPS_SCRIPT_KEY</code> (ou{' '}
+                <code className="font-mono-num font-semibold">RESEND_API_KEY</code>) dans Render Environment Variables.
               </p>
+              <div className="pt-1 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopyCodeGs}
+                  disabled={copyingScript}
+                  title="Copier le script Code.gs directement depuis l’espace Super Admin"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-orange-600 dark:hover:bg-orange-700 text-white text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-60"
+                >
+                  <MaterialIcon name="content_copy" className="w-3.5 h-3.5" />
+                  <span>{copyingScript ? 'Copie...' : 'Copier Code.gs'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadCodeGs}
+                  title="Télécharger le fichier Code.gs sur votre appareil"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/40 bg-white/80 dark:bg-[#0d0f14] hover:bg-white text-amber-900 dark:text-amber-200 text-xs font-semibold transition-colors whitespace-nowrap"
+                >
+                  <MaterialIcon name="download" className="w-3.5 h-3.5" />
+                  <span>Télécharger Code.gs</span>
+                </button>
+              </div>
             </div>
           )}
 
