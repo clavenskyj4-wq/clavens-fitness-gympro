@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
 import { MaterialIconSprite } from './components/MaterialIcon';
 import { Navbar } from './components/Navbar';
+import { WelcomeProgressPage } from './components/WelcomeProgressPage';
 import { ConfirmModal, ToastContainer, ToastItem } from './components/ui';
 import {
   canAccessRoute,
@@ -62,6 +63,7 @@ export default function App() {
   const [showLogin, setShowLogin] = useState(false);
   const [superAdminAuthTick, setSuperAdminAuthTick] = useState(0);
   const [user, setUser] = useState<SessionUser | null>(() => getSavedSession());
+  const [welcomeUser, setWelcomeUser] = useState<SessionUser | null>(null);
   const [isFirstRunAdmin, setIsFirstRunAdmin] = useState(false);
 
   const [config, setConfig] = useState<GymConfig>(DEFAULT_GYM_CONFIG);
@@ -453,10 +455,10 @@ export default function App() {
           isFirstRunAdmin={isFirstRunAdmin}
           onSuccess={(u) => {
             setUser(u);
+            setWelcomeUser(u);
             setIsFirstRunAdmin(false);
             setShowLogin(false);
             setRoute('dashboard');
-            notify('success', `Bienvenue ${u.nom_utilisateur} !`);
           }}
           onBackHome={() => setShowLogin(false)}
         />
@@ -618,6 +620,19 @@ export default function App() {
         <ToastContainer
           toasts={toasts}
           onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+        />
+      </div>
+    );
+  }
+
+  if (welcomeUser) {
+    return (
+      <div className="min-h-screen bg-[#090d14] text-white">
+        <MaterialIconSprite />
+        <WelcomeProgressPage
+          user={welcomeUser}
+          config={config}
+          onComplete={() => setWelcomeUser(null)}
         />
       </div>
     );
