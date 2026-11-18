@@ -20,6 +20,7 @@ interface NavbarProps {
   onToggleTheme: () => void;
   subscriptionAlerts: SubscriptionAlertItem[];
   onRegularizeMember: (memberId: string, forfaitId?: string) => void;
+  onOpenSuperAdmin: () => void;
 }
 
 interface NavItem {
@@ -62,6 +63,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleTheme,
   subscriptionAlerts,
   onRegularizeMember,
+  onOpenSuperAdmin,
 }) => {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -318,6 +320,17 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             {/* Actions : État réseau + Synchro + Installer + Notifications + Thème + Utilisateur */}
             <div className="flex items-center gap-2 shrink-0 ml-auto">
+              {user?.role === 'admin' && (
+                <button
+                  type="button"
+                  onClick={onOpenSuperAdmin}
+                  title="Ouvrir l’espace privé de validation des demandes"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-orange-500/30 bg-orange-500/10 px-2.5 py-1.5 text-xs font-semibold text-orange-700 hover:bg-orange-500/15 dark:text-orange-300"
+                >
+                  <MaterialIcon name="verified" className="h-4 w-4" />
+                  <span className="hidden xl:inline">Super Admin</span>
+                </button>
+              )}
               <div
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap shrink-0 ${
                   isOnline
@@ -735,6 +748,19 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             <div className="flex-1 overflow-y-auto p-3 space-y-1">
+              {user?.role === 'admin' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDrawerOpen(false);
+                    onOpenSuperAdmin();
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-orange-700 hover:bg-orange-500/10 dark:text-orange-300"
+                >
+                  <MaterialIcon name="verified" className="w-5 h-5" />
+                  <span>Espace Super Admin</span>
+                </button>
+              )}
               {allVisibleNav.map((item) => {
                 const active = currentRoute === item.route;
                 return (

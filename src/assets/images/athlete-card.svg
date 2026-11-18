@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="360" viewBox="0 0 300 360" fill="none">
+  <defs>
+    <linearGradient id="background" x1="25" y1="0" x2="276" y2="360" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172033"/>
+      <stop offset="1" stop-color="#3B1A16"/>
+    </linearGradient>
+    <linearGradient id="shirt" x1="82" y1="120" x2="223" y2="315" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FB923C"/>
+      <stop offset="1" stop-color="#DC2626"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="133" y1="57" x2="187" y2="142" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6C5A3"/>
+      <stop offset="1" stop-color="#C77C55"/>
+    </linearGradient>
+  </defs>
+  <rect width="300" height="360" rx="28" fill="url(#background)"/>
+  <circle cx="238" cy="63" r="44" fill="#FB923C" fill-opacity=".12"/>
+  <circle cx="38" cy="266" r="72" fill="#F97316" fill-opacity=".1"/>
+  <path d="M56 306c13-55 38-89 76-102l17 16 19-16c39 12 66 47 79 102l8 54H48l8-54Z" fill="url(#shirt)"/>
+  <path d="m132 204 17 20 19-20 13 9-12 31-20-10-19 10-12-31 14-9Z" fill="#F8FAFC" fill-opacity=".92"/>
+  <path d="M127 139h48v52c0 16-11 28-24 28s-24-12-24-28v-52Z" fill="url(#skin)"/>
+  <path d="M117 95c0-30 20-50 47-50 25 0 43 18 43 47v23c0 15-8 29-20 37l-18 12c-12 8-27 8-39 0l-14-10c-12-9-19-23-19-38V95Z" fill="url(#skin)"/>
+  <path d="M115 108c-9-29-1-56 17-70 15-12 42-16 62-2 17 11 23 30 18 51-6-4-10-11-12-20-16 12-36 17-63 14-3 10-10 20-22 27Z" fill="#1E293B"/>
+  <path d="M136 112c5-4 12-4 17 0" stroke="#573728" stroke-width="4" stroke-linecap="round"/>
+  <path d="M170 112c5-4 12-4 17 0" stroke="#573728" stroke-width="4" stroke-linecap="round"/>
+  <path d="M153 118v19" stroke="#A85F41" stroke-width="4" stroke-linecap="round"/>
+  <path d="M143 150c8 7 19 7 27 0" stroke="#7C382C" stroke-width="4" stroke-linecap="round"/>
+  <path d="M65 290h170" stroke="#FDBA74" stroke-opacity=".35" stroke-width="2"/>
+  <text x="150" y="335" fill="#FFF7ED" font-family="Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="3" text-anchor="middle">ATHLETE</text>
+</svg>

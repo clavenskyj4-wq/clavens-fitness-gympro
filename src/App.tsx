@@ -19,6 +19,11 @@ import {
 } from './lib/db';
 import { syncNow } from './lib/sync';
 import {
+  clearSuperAdminToken,
+  getSuperAdminToken,
+  publishPublicRegistrationConfig,
+} from './lib/superAdmin';
+import {
   computeNextAutoBackupDate,
   daysUntil,
   DEFAULT_GYM_CONFIG,
@@ -35,6 +40,7 @@ import { PaiementsPage, RenewRequest } from './pages/PaiementsPage';
 import { ParametresPage } from './pages/ParametresPage';
 import { PresencesPage } from './pages/PresencesPage';
 import { PublicJoinPage } from './pages/PublicJoinPage';
+import { SuperAdminPage } from './pages/SuperAdminPage';
 import { RapportsPage } from './pages/RapportsPage';
 import {
   CoachsPage,
@@ -54,6 +60,8 @@ import {
 export default function App() {
   const [route, setRoute] = useState<AppRoute>('accueil');
   const [showLogin, setShowLogin] = useState(false);
+  const [superAdminMode, setSuperAdminMode] = useState(false);
+  const [superAdminAuthTick, setSuperAdminAuthTick] = useState(0);
   const [user, setUser] = useState<SessionUser | null>(() => getSavedSession());
   const [isFirstRunAdmin, setIsFirstRunAdmin] = useState(false);
 
@@ -205,6 +213,8 @@ export default function App() {
   // Garde le relais serveur QR à jour dès qu'un administrateur ouvre l'application
   useEffect(() => {
     if (!user || user.role !== 'admin' || !navigator.onLine) return;
+    const token = getSuperAdminToken();
+    if (!token) return;
     getAllRecords<Forfait>('Forfaits')
       .then((forfaits) => {
         const activeList = forfaits
@@ -216,27 +226,30 @@ export default function App() {
             devise: f.devise,
             duree_jours: Number(f.duree_jours),
           }));
-        return fetch('/api/public-registration/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            nom_gym: config.nom_gym,
-            adresse: config.adresse,
-            telephone: config.telephone,
-            apps_script_url: config.apps_script_url,
-            apps_script_key: config.apps_script_key,
-            forfaits: activeList,
-          }),
+        return publishPublicRegistrationConfig(token, {
+          nom_gym: config.nom_gym,
+          adresse: config.adresse,
+          telephone: config.telephone,
+          apps_script_url: config.apps_script_url,
+          apps_script_key: config.apps_script_key,
+          forfaits: activeList,
         });
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        notify(
+          'error',
+          error instanceof Error ? error.message : 'Impossible de publier le lien d’inscription.'
+        );
+      });
   }, [
     user,
+    superAdminAuthTick,
     config.nom_gym,
     config.adresse,
     config.telephone,
     config.apps_script_url,
     config.apps_script_key,
+    notify,
   ]);
 
   const handleSyncNow = useCallback(async () => {
@@ -285,7 +298,9 @@ export default function App() {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         clearSession();
+        clearSuperAdminToken();
         setUser(null);
+        setSuperAdminMode(false);
         setRoute('accueil');
         notify('info', 'Session fermée automatiquement suite à une période d’inactivité.');
       }, minutes * 60 * 1000);
@@ -405,7 +420,9 @@ export default function App() {
 
   const handleLogout = () => {
     clearSession();
+    clearSuperAdminToken();
     setUser(null);
+    setSuperAdminMode(false);
     setRoute('accueil');
     setShowLogin(false);
     notify('info', 'Vous êtes déconnecté.');
@@ -575,6 +592,24 @@ export default function App() {
     );
   }
 
+  if (superAdminMode && user?.role === 'admin') {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#0d0f14] dark:text-slate-100">
+        <MaterialIconSprite />
+        <SuperAdminPage
+          gymName={config.nom_gym}
+          onAuthenticated={() => setSuperAdminAuthTick((tick) => tick + 1)}
+          onBack={() => setSuperAdminMode(false)}
+          onNotify={notify}
+        />
+        <ToastContainer
+          toasts={toasts}
+          onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#0d0f14] dark:text-slate-100">
       <MaterialIconSprite />
@@ -593,6 +628,7 @@ export default function App() {
         onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
         subscriptionAlerts={subscriptionAlerts}
         onRegularizeMember={handleRegularizeMember}
+        onOpenSuperAdmin={() => setSuperAdminMode(true)}
       />
 
       <main className={route === 'accueil' && !showLogin ? '' : 'pt-16 pb-20 lg:pb-8'}>

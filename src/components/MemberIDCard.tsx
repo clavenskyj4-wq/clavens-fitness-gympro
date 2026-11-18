@@ -5,6 +5,8 @@ import { GymConfig, Membre } from '../types/gym';
 import { MaterialIcon } from './MaterialIcon';
 import { BarcodeSVG, QRCodeSVG } from './ui';
 
+const ATHLETE_PLACEHOLDER = new URL('../assets/images/athlete-card.svg', import.meta.url).href;
+
 interface MemberIDCardProps {
   member: Membre;
   config: GymConfig;
@@ -62,7 +64,7 @@ export const MemberIDCard: React.FC<MemberIDCardProps> = ({
             <img
               src={config.logo}
               alt={config.nom_gym}
-              className="w-8 h-8 rounded-lg object-cover bg-white border border-white/25 shrink-0"
+              className="w-8 h-8 rounded-lg object-contain bg-transparent p-0.5 border border-white/25 shrink-0"
             />
           ) : (
             <span
@@ -103,18 +105,11 @@ export const MemberIDCard: React.FC<MemberIDCardProps> = ({
             className="w-[70px] h-[84px] rounded-xl overflow-hidden border-2 bg-slate-200 flex items-center justify-center shadow-xs"
             style={{ borderColor: accent.primary }}
           >
-            {member.photo ? (
-              <img
-                src={member.photo}
-                alt={`${member.prenom} ${member.nom}`}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <span className="font-brand font-bold text-lg text-slate-600">
-                {member.prenom.charAt(0)}
-                {member.nom.charAt(0)}
-              </span>
-            )}
+            <img
+              src={member.photo || ATHLETE_PLACEHOLDER}
+              alt={member.photo ? `${member.prenom} ${member.nom}` : 'Illustration athlète'}
+              className="w-full h-full object-cover"
+            />
           </div>
           <span className="mt-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
             Sexe : {member.sexe}
@@ -312,7 +307,7 @@ export async function downloadMemberCardPNG(
   drawRoundedRect(ctx, photoX, photoY, photoW, photoH, 20);
   ctx.fill();
 
-  const photoImg = await loadImage(member.photo);
+  const photoImg = await loadImage(member.photo || ATHLETE_PLACEHOLDER);
   if (photoImg) {
     ctx.save();
     drawRoundedRect(ctx, photoX, photoY, photoW, photoH, 20);
