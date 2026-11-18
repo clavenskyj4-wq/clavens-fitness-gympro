@@ -21,9 +21,9 @@ View your app in AI Studio: https://ai.studio/apps/a3ce8f28-7890-43e8-aa0f-a0f4d
 
 ## Accès Super Admin et approbation des inscriptions
 
-L’espace Super Admin est accessible depuis l’application après connexion avec le compte
-administrateur GymPro. Son accès aux demandes est protégé par des identifiants côté serveur;
-il n’est pas inclus dans le lien/QR public d’inscription.
+L’espace Super Admin s’ouvre directement avec l’URL `https://clavens-fitness-gympro.onrender.com/?superadmin=1`.
+Son accès aux demandes est protégé par des identifiants côté serveur; cette URL est distincte du
+lien/QR public d’inscription.
 
 Avant le déploiement, définissez dans l’environnement du serveur :
 

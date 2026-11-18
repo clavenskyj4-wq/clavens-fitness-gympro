@@ -60,7 +60,6 @@ import {
 export default function App() {
   const [route, setRoute] = useState<AppRoute>('accueil');
   const [showLogin, setShowLogin] = useState(false);
-  const [superAdminMode, setSuperAdminMode] = useState(false);
   const [superAdminAuthTick, setSuperAdminAuthTick] = useState(0);
   const [user, setUser] = useState<SessionUser | null>(() => getSavedSession());
   const [isFirstRunAdmin, setIsFirstRunAdmin] = useState(false);
@@ -86,6 +85,10 @@ export default function App() {
     if (typeof window === 'undefined') return false;
     const params = new URLSearchParams(window.location.search);
     return params.get('join') === '1';
+  });
+  const [superAdminMode, setSuperAdminMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('superadmin') === '1';
   });
 
   // Applique le thème clair/sombre et la palette de couleurs sur <html>
@@ -592,14 +595,24 @@ export default function App() {
     );
   }
 
-  if (superAdminMode && user?.role === 'admin') {
+  if (superAdminMode) {
     return (
       <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#0d0f14] dark:text-slate-100">
         <MaterialIconSprite />
         <SuperAdminPage
           gymName={config.nom_gym}
           onAuthenticated={() => setSuperAdminAuthTick((tick) => tick + 1)}
-          onBack={() => setSuperAdminMode(false)}
+          onBack={() => {
+            setSuperAdminMode(false);
+            const params = new URLSearchParams(window.location.search);
+            params.delete('superadmin');
+            const query = params.toString();
+            window.history.replaceState(
+              null,
+              '',
+              `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
+            );
+          }}
           onNotify={notify}
         />
         <ToastContainer
@@ -628,7 +641,6 @@ export default function App() {
         onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
         subscriptionAlerts={subscriptionAlerts}
         onRegularizeMember={handleRegularizeMember}
-        onOpenSuperAdmin={() => setSuperAdminMode(true)}
       />
 
       <main className={route === 'accueil' && !showLogin ? '' : 'pt-16 pb-20 lg:pb-8'}>
