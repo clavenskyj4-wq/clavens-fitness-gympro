@@ -5,7 +5,7 @@ import { GymConfig, Membre } from '../types/gym';
 import { MaterialIcon } from './MaterialIcon';
 import { BarcodeSVG, QRCodeSVG } from './ui';
 
-const ATHLETE_PLACEHOLDER = new URL('../assets/images/athlete-card.svg', import.meta.url).href;
+const ATHLETE_WATERMARK_SRC = '/src/assets/images/athlete_card_watermark_1795017770018.jpg';
 
 interface MemberIDCardProps {
   member: Membre;
@@ -64,7 +64,7 @@ export const MemberIDCard: React.FC<MemberIDCardProps> = ({
             <img
               src={config.logo}
               alt={config.nom_gym}
-              className="w-8 h-8 rounded-lg object-contain bg-transparent p-0.5 border border-white/25 shrink-0"
+              className="w-8 h-8 rounded-lg object-cover bg-white border border-white/25 shrink-0"
             />
           ) : (
             <span
@@ -97,19 +97,72 @@ export const MemberIDCard: React.FC<MemberIDCardProps> = ({
         </div>
       </div>
 
-      {/* Corps central de la carte : Photo d'identité + Coordonnées + QR Code */}
-      <div className="relative px-4 py-3 flex items-stretch justify-between gap-3 bg-gradient-to-br from-white via-slate-50 to-slate-100">
+      {/* Corps central de la carte : Filigrane athlète & logo transparents + Photo + Coordonnées + QR Code */}
+      <div className="relative overflow-hidden px-4 py-3 flex items-stretch justify-between gap-3 bg-gradient-to-br from-white via-slate-50 to-slate-100">
+        {/* Logo du gym en transparence (centre du corps de la carte) */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none select-none absolute inset-0 flex items-center justify-center z-0"
+        >
+          {config.logo ? (
+            <img
+              src={config.logo}
+              alt=""
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = 'none';
+              }}
+              className="w-28 h-28 object-contain opacity-[0.08] grayscale"
+            />
+          ) : (
+            <svg
+              viewBox="0 0 120 120"
+              className="w-28 h-28 text-slate-900 opacity-[0.07]"
+              fill="currentColor"
+            >
+              <circle
+                cx="60"
+                cy="60"
+                r="52"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="4"
+                strokeDasharray="6 4"
+              />
+              <circle cx="60" cy="60" r="40" fill="none" stroke="currentColor" strokeWidth="2.5" />
+              <path d="M84 68l4-4-4-4-10 10-24-24 10-10-4-4-4 4-4-4-6 6 4 4-4 4 4 4 10-10 24 24-10 10 4 4 4-4 4 4 6-6-4-4z" />
+            </svg>
+          )}
+        </div>
+
+        {/* Image d'athlète en transparence (dynamisme sportif en arrière-plan) */}
+        <img
+          src={ATHLETE_WATERMARK_SRC}
+          alt=""
+          aria-hidden="true"
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.display = 'none';
+          }}
+          className="pointer-events-none select-none absolute right-14 -bottom-2 h-[112%] w-auto object-contain opacity-[0.11] mix-blend-multiply grayscale contrast-125 z-0"
+        />
+
         {/* Photo d'identité format passeport/étudiant */}
-        <div className="flex flex-col items-center justify-between shrink-0">
+        <div className="relative z-10 flex flex-col items-center justify-between shrink-0">
           <div
             className="w-[70px] h-[84px] rounded-xl overflow-hidden border-2 bg-slate-200 flex items-center justify-center shadow-xs"
             style={{ borderColor: accent.primary }}
           >
-            <img
-              src={member.photo || ATHLETE_PLACEHOLDER}
-              alt={member.photo ? `${member.prenom} ${member.nom}` : 'Illustration athlète'}
-              className="w-full h-full object-cover"
-            />
+            {member.photo ? (
+              <img
+                src={member.photo}
+                alt={`${member.prenom} ${member.nom}`}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <span className="font-brand font-bold text-lg text-slate-600">
+                {member.prenom.charAt(0)}
+                {member.nom.charAt(0)}
+              </span>
+            )}
           </div>
           <span className="mt-1 text-[8px] font-bold uppercase tracking-wider text-slate-500">
             Sexe : {member.sexe}
@@ -117,31 +170,31 @@ export const MemberIDCard: React.FC<MemberIDCardProps> = ({
         </div>
 
         {/* Informations du titulaire */}
-        <div className="flex-1 min-w-0 flex flex-col justify-between py-0.5">
+        <div className="relative z-10 flex-1 min-w-0 flex flex-col justify-between py-0.5">
           <div>
-            <p className="text-[8px] font-bold uppercase tracking-wider text-slate-400">
+            <p className="text-[8px] font-bold uppercase tracking-wider text-slate-500">
               Titulaire
             </p>
             <p className="font-brand font-extrabold text-[15px] text-slate-900 leading-tight uppercase truncate">
               {member.prenom} {member.nom}
             </p>
-            <div className="mt-1.5 space-y-0.5 text-[10px] text-slate-700">
+            <div className="mt-1.5 space-y-0.5 text-[10px] text-slate-800">
               <p className="truncate">
-                <span className="text-slate-500 font-medium">Forfait : </span>
+                <span className="text-slate-600 font-medium">Forfait : </span>
                 <span className="font-bold" style={{ color: accent.primary }}>
                   {forfaitNom}
                 </span>
               </p>
               <p className="font-mono-num truncate">
-                <span className="text-slate-500 font-sans font-medium">Tél : </span>
+                <span className="text-slate-600 font-sans font-medium">Tél : </span>
                 {member.telephone || '—'}
               </p>
               <p className="font-mono-num">
-                <span className="text-slate-500 font-sans font-medium">Inscrit : </span>
+                <span className="text-slate-600 font-sans font-medium">Inscrit : </span>
                 {formatDateFR(member.date_inscription)}
               </p>
               <p className="font-mono-num">
-                <span className="text-slate-500 font-sans font-medium">Expire : </span>
+                <span className="text-slate-600 font-sans font-medium">Expire : </span>
                 <span className="font-bold text-slate-900">
                   {dateExpiration ? formatDateFR(dateExpiration) : 'Non défini'}
                 </span>
@@ -151,7 +204,7 @@ export const MemberIDCard: React.FC<MemberIDCardProps> = ({
         </div>
 
         {/* Colonne droite : QR Code local de contrôle */}
-        <div className="shrink-0 flex flex-col items-center justify-center bg-white rounded-xl p-1.5 border border-slate-200 shadow-2xs">
+        <div className="relative z-10 shrink-0 flex flex-col items-center justify-center bg-white/95 rounded-xl p-1.5 border border-slate-200 shadow-2xs">
           <QRCodeSVG value={member.code_membre} size={74} className="p-0!" />
           <span className="text-[7px] font-mono-num font-bold tracking-wider text-slate-500 mt-0.5">
             SCAN ACCÈS
@@ -298,6 +351,57 @@ export async function downloadMemberCardPNG(
   ctx.font = 'bold 22px monospace';
   ctx.fillText(member.code_membre, W - 36, 96);
 
+  // Filigranes transparents (Logo du gym + Image athlète) dans le corps de la carte
+  const athleteImg = await loadImage(ATHLETE_WATERMARK_SRC);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 132, W, 394);
+  ctx.clip();
+
+  // Logo du gym en transparence centré dans la zone centrale
+  if (logoImg) {
+    ctx.save();
+    ctx.globalAlpha = 0.08;
+    const wmLogoSize = 230;
+    const wmLogoX = W / 2 - wmLogoSize / 2;
+    const wmLogoY = 132 + (394 - wmLogoSize) / 2;
+    ctx.drawImage(logoImg, wmLogoX, wmLogoY, wmLogoSize, wmLogoSize);
+    ctx.restore();
+  } else {
+    ctx.save();
+    ctx.globalAlpha = 0.07;
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(W / 2, 329, 108, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(W / 2, 329, 86, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 42px Montserrat, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      (config.nom_gym || 'GYMPRO').slice(0, 2).toUpperCase(),
+      W / 2,
+      344
+    );
+    ctx.restore();
+  }
+
+  // Image athlète en transparence
+  if (athleteImg) {
+    ctx.save();
+    ctx.globalAlpha = 0.11;
+    ctx.globalCompositeOperation = 'multiply';
+    const targetH = 420;
+    const targetW = (athleteImg.naturalWidth / Math.max(1, athleteImg.naturalHeight)) * targetH;
+    ctx.drawImage(athleteImg, W - targetW - 140, 128, targetW, targetH);
+    ctx.restore();
+  }
+  ctx.restore();
+
   // Zone photo identité
   const photoX = 38;
   const photoY = 174;
@@ -307,7 +411,7 @@ export async function downloadMemberCardPNG(
   drawRoundedRect(ctx, photoX, photoY, photoW, photoH, 20);
   ctx.fill();
 
-  const photoImg = await loadImage(member.photo || ATHLETE_PLACEHOLDER);
+  const photoImg = await loadImage(member.photo);
   if (photoImg) {
     ctx.save();
     drawRoundedRect(ctx, photoX, photoY, photoW, photoH, 20);

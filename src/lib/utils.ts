@@ -251,12 +251,7 @@ export function calculateBMI(poidsKg: number, tailleCm: number): number {
  * Redimensionne et compresse une image (fichier ou flux vidéo) en base64 légère
  * pour garder IndexedDB et Google Sheets rapides.
  */
-export function compressImageFile(
-  file: File,
-  maxSize = 320,
-  quality = 0.72,
-  outputFormat: 'image/jpeg' | 'image/png' = 'image/jpeg'
-): Promise<string> {
+export function compressImageFile(file: File, maxSize = 320, quality = 0.72): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Impossible de lire le fichier image.'));
@@ -282,7 +277,7 @@ export function compressImageFile(
           return;
         }
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL(outputFormat, quality));
+        resolve(canvas.toDataURL('image/jpeg', quality));
       };
       img.src = String(reader.result);
     };

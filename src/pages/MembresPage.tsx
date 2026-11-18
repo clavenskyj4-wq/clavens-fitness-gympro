@@ -144,6 +144,29 @@ export const MembresPage: React.FC<MembresPageProps> = ({
       getAllRecords<Mesure>('Mesures'),
     ]);
 
+    // Récupère les nouvelles demandes soumises à distance via QR Code depuis le relais serveur
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      try {
+        const res = await fetch('/api/public-registration/pending', { cache: 'no-store' });
+        if (res.ok) {
+          const data = (await res.json()) as { ok?: boolean; items?: Membre[] };
+          const existingIds = new Set(m.map((x) => x.id));
+          let added = false;
+          for (const item of data.items || []) {
+            if (!existingIds.has(item.id)) {
+              await saveRecord<Membre>('Membres', { ...item });
+              added = true;
+            }
+          }
+          if (added) {
+            m = await getAllRecords<Membre>('Membres');
+          }
+        }
+      } catch {
+        // ignore offline / network error
+      }
+    }
+
     setMembres(m.sort((x, y) => x.code_membre.localeCompare(y.code_membre)));
     setAbonnements(a);
     setForfaits(f);
@@ -603,6 +626,12 @@ export const MembresPage: React.FC<MembresPageProps> = ({
       }
     }
 
+    await fetch('/api/public-registration/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: validateTarget.id }),
+    }).catch(() => {});
+
     await logAction(
       user.nom_utilisateur,
       'Validation inscription QR',
@@ -617,6 +646,11 @@ export const MembresPage: React.FC<MembresPageProps> = ({
   const handleConfirmReject = async () => {
     if (!rejectTarget || !isAdmin) return;
     await softDeleteRecord('Membres', rejectTarget.id);
+    await fetch('/api/public-registration/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: rejectTarget.id }),
+    }).catch(() => {});
     await logAction(
       user.nom_utilisateur,
       'Refus inscription QR',

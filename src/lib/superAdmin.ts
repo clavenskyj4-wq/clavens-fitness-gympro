@@ -1,11 +1,15 @@
-import { Membre } from '../types/gym';
-
 const SUPER_ADMIN_TOKEN_KEY = 'gympro_super_admin_token';
 
 export interface SuperAdminRequests {
-  pending: Membre[];
-  approved: Membre[];
-  members: Membre[];
+  pendingGyms: GymAccessRequest[];
+  approvedGyms: GymAccessRequest[];
+}
+
+export interface GymAccessRequest {
+  id: string;
+  gymName: string;
+  username: string;
+  createdAt: string;
 }
 
 async function request<T>(
@@ -51,20 +55,15 @@ export function clearSuperAdminToken(): void {
 }
 
 export async function getSuperAdminRequests(token: string): Promise<SuperAdminRequests> {
-  return request<SuperAdminRequests>('/requests', token);
+  return request<SuperAdminRequests>('/gym-requests', token);
 }
 
-export async function updateLinkedMemberStatus(
+export async function decideGymAccessRequest(
   token: string,
-  memberId: string,
-  statut: 'actif' | 'suspendu'
-): Promise<Membre> {
-  const result = await request<{ member: Membre }>(
-    `/members/${encodeURIComponent(memberId)}/status`,
-    token,
-    { statut }
-  );
-  return result.member;
+  id: string,
+  decision: 'approve' | 'reject'
+): Promise<void> {
+  await request(`/gym-requests/${encodeURIComponent(id)}/${decision}`, token, {});
 }
 
 export async function changeSuperAdminPassword(
@@ -73,36 +72,4 @@ export async function changeSuperAdminPassword(
   newPassword: string
 ): Promise<void> {
   await request('/password', token, { currentPassword, newPassword });
-}
-
-export async function decideSuperAdminRequest(
-  token: string,
-  id: string,
-  decision: 'approve' | 'reject' | 'complete'
-): Promise<{ member?: Membre }> {
-  return request<{ member?: Membre }>(
-    `/requests/${encodeURIComponent(id)}/${decision}`,
-    token,
-    {}
-  );
-}
-
-export async function publishPublicRegistrationConfig(
-  token: string,
-  config: {
-    nom_gym: string;
-    adresse: string;
-    telephone: string;
-    apps_script_url: string;
-    apps_script_key: string;
-    forfaits: Array<{
-      id: string;
-      nom: string;
-      prix: number;
-      devise: string;
-      duree_jours: number;
-    }>;
-  }
-): Promise<void> {
-  await request('/public-registration/config', token, config, '/api');
 }

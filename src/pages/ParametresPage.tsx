@@ -161,7 +161,7 @@ export const ParametresPage: React.FC<ParametresPageProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const b64 = await compressImageFile(file, 160, 0.8, 'image/png');
+      const b64 = await compressImageFile(file, 160, 0.8);
       setGymForm((prev) => ({ ...prev, logo: b64 }));
     } catch (err) {
       onNotify('error', err instanceof Error ? err.message : 'Image invalide.');

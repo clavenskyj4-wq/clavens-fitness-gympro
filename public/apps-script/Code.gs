@@ -204,9 +204,32 @@ function doPost(e) {
       });
     }
 
+    if (body.action === 'send_email') {
+      const recipient = String(body.to || '').trim();
+      const subject = String(body.subject || 'Notification GymPro').trim();
+      const textBody = String(body.textBody || body.body || '').trim();
+      const htmlBody = String(body.htmlBody || '').trim();
+      if (!recipient) {
+        return jsonResponse_({ ok: false, error: 'Adresse email destinataire manquante.' });
+      }
+      MailApp.sendEmail({
+        to: recipient,
+        subject: subject,
+        body: textBody || subject,
+        htmlBody: htmlBody || undefined
+      });
+      return jsonResponse_({
+        ok: true,
+        channel: 'apps_script',
+        to: recipient,
+        serverTime: new Date().toISOString()
+      });
+    }
+
+    const singleRecord = body.payload || body.record;
     const operations = Array.isArray(body.operations)
       ? body.operations
-      : (body.table && body.payload ? [{ table: body.table, action: body.action || 'upsert', payload: body.payload }] : []);
+      : (body.table && singleRecord ? [{ table: body.table, action: body.op || body.action || 'upsert', payload: singleRecord }] : []);
 
     const results = [];
     const grouped = {};

@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
 import { MaterialIconSprite } from './components/MaterialIcon';
 import { Navbar } from './components/Navbar';
-import { WelcomeProgressPage } from './components/WelcomeProgressPage';
 import { ConfirmModal, ToastContainer, ToastItem } from './components/ui';
+import { fetchAccessStatus, getOrCreateDeviceId } from './lib/accessControl';
 import {
   canAccessRoute,
   clearSession,
@@ -19,11 +19,6 @@ import {
   subscribeDBChange,
 } from './lib/db';
 import { syncNow } from './lib/sync';
-import {
-  clearSuperAdminToken,
-  getSuperAdminToken,
-  publishPublicRegistrationConfig,
-} from './lib/superAdmin';
 import {
   computeNextAutoBackupDate,
   daysUntil,
@@ -41,7 +36,6 @@ import { PaiementsPage, RenewRequest } from './pages/PaiementsPage';
 import { ParametresPage } from './pages/ParametresPage';
 import { PresencesPage } from './pages/PresencesPage';
 import { PublicJoinPage } from './pages/PublicJoinPage';
-import { SuperAdminPage } from './pages/SuperAdminPage';
 import { RapportsPage } from './pages/RapportsPage';
 import {
   CoachsPage,
@@ -49,6 +43,7 @@ import {
   EquipementsPage,
   MesuresPage,
 } from './pages/RessourcesPages';
+import { SuperAdminPage } from './pages/SuperAdminPage';
 import {
   Abonnement,
   AppRoute,
@@ -61,9 +56,7 @@ import {
 export default function App() {
   const [route, setRoute] = useState<AppRoute>('accueil');
   const [showLogin, setShowLogin] = useState(false);
-  const [superAdminAuthTick, setSuperAdminAuthTick] = useState(0);
   const [user, setUser] = useState<SessionUser | null>(() => getSavedSession());
-  const [welcomeUser, setWelcomeUser] = useState<SessionUser | null>(null);
   const [isFirstRunAdmin, setIsFirstRunAdmin] = useState(false);
 
   const [config, setConfig] = useState<GymConfig>(DEFAULT_GYM_CONFIG);
@@ -90,7 +83,8 @@ export default function App() {
   });
   const [superAdminMode, setSuperAdminMode] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
-    return new URLSearchParams(window.location.search).get('superadmin') === '1';
+    const params = new URLSearchParams(window.location.search);
+    return params.get('superadmin') === '1' || window.location.hash === '#/super-admin';
   });
 
   // Applique le thème clair/sombre et la palette de couleurs sur <html>
@@ -215,11 +209,32 @@ export default function App() {
     };
   }, [refreshMeta]);
 
+  // Vérifie en arrière-plan (uniquement en ligne) si l'appareil connecté a été révoqué par le Super Admin
+  useEffect(() => {
+    if (!user || superAdminMode || !isOnline) return;
+    const deviceId = getOrCreateDeviceId();
+    fetchAccessStatus(deviceId)
+      .then((res) => {
+        if (res.gateEnabled && res.status !== 'approved') {
+          clearSession();
+          setUser(null);
+          setRoute('accueil');
+          notify(
+            'error',
+            res.status === 'revoked' || res.status === 'rejected'
+              ? 'Votre autorisation d’accès a été révoquée par le Super Admin.'
+              : 'Cet appareil nécessite une approbation Super Admin avant de rester connecté.'
+          );
+        }
+      })
+      .catch(() => {
+        // Ignorer en cas de coupure réseau passagère
+      });
+  }, [user, superAdminMode, isOnline, notify]);
+
   // Garde le relais serveur QR à jour dès qu'un administrateur ouvre l'application
   useEffect(() => {
     if (!user || user.role !== 'admin' || !navigator.onLine) return;
-    const token = getSuperAdminToken();
-    if (!token) return;
     getAllRecords<Forfait>('Forfaits')
       .then((forfaits) => {
         const activeList = forfaits
@@ -231,30 +246,27 @@ export default function App() {
             devise: f.devise,
             duree_jours: Number(f.duree_jours),
           }));
-        return publishPublicRegistrationConfig(token, {
-          nom_gym: config.nom_gym,
-          adresse: config.adresse,
-          telephone: config.telephone,
-          apps_script_url: config.apps_script_url,
-          apps_script_key: config.apps_script_key,
-          forfaits: activeList,
+        return fetch('/api/public-registration/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nom_gym: config.nom_gym,
+            adresse: config.adresse,
+            telephone: config.telephone,
+            apps_script_url: config.apps_script_url,
+            apps_script_key: config.apps_script_key,
+            forfaits: activeList,
+          }),
         });
       })
-      .catch((error: unknown) => {
-        notify(
-          'error',
-          error instanceof Error ? error.message : 'Impossible de publier le lien d’inscription.'
-        );
-      });
+      .catch(() => {});
   }, [
     user,
-    superAdminAuthTick,
     config.nom_gym,
     config.adresse,
     config.telephone,
     config.apps_script_url,
     config.apps_script_key,
-    notify,
   ]);
 
   const handleSyncNow = useCallback(async () => {
@@ -303,9 +315,7 @@ export default function App() {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         clearSession();
-        clearSuperAdminToken();
         setUser(null);
-        setSuperAdminMode(false);
         setRoute('accueil');
         notify('info', 'Session fermée automatiquement suite à une période d’inactivité.');
       }, minutes * 60 * 1000);
@@ -425,9 +435,7 @@ export default function App() {
 
   const handleLogout = () => {
     clearSession();
-    clearSuperAdminToken();
     setUser(null);
-    setSuperAdminMode(false);
     setRoute('accueil');
     setShowLogin(false);
     notify('info', 'Vous êtes déconnecté.');
@@ -455,10 +463,10 @@ export default function App() {
           isFirstRunAdmin={isFirstRunAdmin}
           onSuccess={(u) => {
             setUser(u);
-            setWelcomeUser(u);
             setIsFirstRunAdmin(false);
             setShowLogin(false);
             setRoute('dashboard');
+            notify('success', `Bienvenue ${u.nom_utilisateur} !`);
           }}
           onBackHome={() => setShowLogin(false)}
         />
@@ -575,6 +583,28 @@ export default function App() {
     }
   };
 
+  if (superAdminMode) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#0d0f14] dark:text-slate-100">
+        <MaterialIconSprite />
+        <SuperAdminPage
+          gymName={config.nom_gym}
+          onBackHome={() => {
+            setSuperAdminMode(false);
+            if (typeof window !== 'undefined') {
+              window.history.replaceState(null, '', window.location.pathname);
+            }
+          }}
+          onNotify={notify}
+        />
+        <ToastContainer
+          toasts={toasts}
+          onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+        />
+      </div>
+    );
+  }
+
   if (publicJoinMode) {
     return (
       <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#0d0f14] dark:text-slate-100">
@@ -592,47 +622,6 @@ export default function App() {
         <ToastContainer
           toasts={toasts}
           onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
-        />
-      </div>
-    );
-  }
-
-  if (superAdminMode) {
-    return (
-      <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#0d0f14] dark:text-slate-100">
-        <MaterialIconSprite />
-        <SuperAdminPage
-          gymName={config.nom_gym}
-          onAuthenticated={() => setSuperAdminAuthTick((tick) => tick + 1)}
-          onBack={() => {
-            setSuperAdminMode(false);
-            const params = new URLSearchParams(window.location.search);
-            params.delete('superadmin');
-            const query = params.toString();
-            window.history.replaceState(
-              null,
-              '',
-              `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`
-            );
-          }}
-          onNotify={notify}
-        />
-        <ToastContainer
-          toasts={toasts}
-          onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
-        />
-      </div>
-    );
-  }
-
-  if (welcomeUser) {
-    return (
-      <div className="min-h-screen bg-[#090d14] text-white">
-        <MaterialIconSprite />
-        <WelcomeProgressPage
-          user={welcomeUser}
-          config={config}
-          onComplete={() => setWelcomeUser(null)}
         />
       </div>
     );

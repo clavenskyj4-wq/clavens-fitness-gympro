@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { MaterialIcon } from '../components/MaterialIcon';
-import { getAllRecords } from '../lib/db';
-import { compressImageFile, formatMoney } from '../lib/utils';
-import { Forfait, GymConfig } from '../types/gym';
+import { getAllRecords, saveRecord } from '../lib/db';
+import { compressImageFile, formatMoney, todayISO } from '../lib/utils';
+import { Forfait, GymConfig, Membre } from '../types/gym';
 
 interface PublicJoinPageProps {
   config: GymConfig;
@@ -116,51 +116,93 @@ export const PublicJoinPage: React.FC<PublicJoinPageProps> = ({
 
     setSubmitting(true);
     try {
-      if (!navigator.onLine) {
-        throw new Error('Une connexion internet est nécessaire pour transmettre votre demande.');
+      let savedViaServer = false;
+      let resultMember: { code_membre: string; prenom: string; nom: string } | null = null;
+      let syncedToSheets = false;
+
+      if (navigator.onLine) {
+        try {
+          const res = await fetch('/api/public-registration/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prenom: prenom.trim(),
+              nom: nom.trim(),
+              sexe,
+              date_naissance: dateNaissance,
+              telephone: telephone.trim(),
+              email: email.trim(),
+              adresse: adresse.trim(),
+              objectif: objectif.trim(),
+              forfait_souhaite: forfaitSouhaite,
+              contact_urgence_nom: contactUrgenceNom.trim(),
+              contact_urgence_tel: contactUrgenceTel.trim(),
+              notes_sante: notesSante.trim(),
+              photo,
+            }),
+          });
+          const data = (await res.json()) as {
+            ok?: boolean;
+            member?: Membre;
+            syncedToSheets?: boolean;
+            error?: string;
+          };
+          if (res.ok && data.ok && data.member) {
+            savedViaServer = true;
+            syncedToSheets = Boolean(data.syncedToSheets);
+            resultMember = {
+              code_membre: data.member.code_membre,
+              prenom: data.member.prenom,
+              nom: data.member.nom,
+            };
+          }
+        } catch {
+          // fallback local ci-dessous
+        }
       }
 
-      const res = await fetch('/api/public-registration/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prenom: prenom.trim(),
+      if (!savedViaServer) {
+        const fallbackCode = `DEM-${Math.floor(1000 + Math.random() * 9000)}`;
+        const notesCombined = forfaitSouhaite
+          ? `[Forfait souhaité : ${forfaitSouhaite}]${
+              notesSante.trim() ? ` ${notesSante.trim()}` : ''
+            }`
+          : notesSante.trim();
+        const savedLocal = await saveRecord<Membre>('Membres', {
+          code_membre: fallbackCode,
           nom: nom.trim(),
+          prenom: prenom.trim(),
           sexe,
           date_naissance: dateNaissance,
           telephone: telephone.trim(),
           email: email.trim(),
           adresse: adresse.trim(),
-          objectif: objectif.trim(),
-          forfait_souhaite: forfaitSouhaite,
+          photo,
           contact_urgence_nom: contactUrgenceNom.trim(),
           contact_urgence_tel: contactUrgenceTel.trim(),
-          notes_sante: notesSante.trim(),
-          photo,
-        }),
-      });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        member?: { code_membre: string; prenom: string; nom: string };
-        syncedToSheets?: boolean;
-        error?: string;
-      };
-      if (!res.ok || !data.ok || !data.member) {
-        throw new Error(data.error || 'Impossible de transmettre la demande au serveur.');
+          objectif: objectif.trim(),
+          notes_sante: notesCombined,
+          date_inscription: todayISO(),
+          statut: 'en_attente',
+          coach_id: '',
+          tarif_coach: 0,
+        });
+        resultMember = {
+          code_membre: savedLocal.code_membre,
+          prenom: savedLocal.prenom,
+          nom: savedLocal.nom,
+        };
       }
 
-      setSubmittedResult({
-        code_membre: data.member.code_membre,
-        prenom: data.member.prenom,
-        nom: data.member.nom,
-        syncedToSheets: Boolean(data.syncedToSheets),
-      });
-      onNotify('success', 'Votre demande d’inscription a bien été transmise !');
-    } catch (error) {
-      onNotify(
-        'error',
-        error instanceof Error ? error.message : 'Erreur lors de l’envoi de votre inscription.'
-      );
+      if (resultMember) {
+        setSubmittedResult({
+          ...resultMember,
+          syncedToSheets,
+        });
+        onNotify('success', 'Votre demande d’inscription a bien été transmise !');
+      }
+    } catch {
+      onNotify('error', 'Erreur lors de l’envoi de votre inscription.');
     } finally {
       setSubmitting(false);
     }

@@ -1,617 +1,1230 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { MaterialIcon } from '../components/MaterialIcon';
+import { ConfirmModal, Modal, ToastItem } from '../components/ui';
 import {
-  clearSuperAdminToken,
-  changeSuperAdminPassword,
-  decideSuperAdminRequest,
-  getSuperAdminRequests,
+  AccessRequestItem,
+  getOrCreateDeviceId,
   getSuperAdminToken,
-  loginSuperAdmin,
-  updateLinkedMemberStatus,
-} from '../lib/superAdmin';
-import { saveRecord } from '../lib/db';
-import { Membre } from '../types/gym';
-import { formatDateFR } from '../lib/utils';
+  setCachedDeviceApproved,
+  setSuperAdminToken,
+} from '../lib/accessControl';
 
 interface SuperAdminPageProps {
   gymName: string;
-  onAuthenticated: () => void;
-  onBack: () => void;
-  onNotify: (type: 'success' | 'error' | 'info', message: string) => void;
+  onBackHome: () => void;
+  onNotify: (type: ToastItem['type'], message: string) => void;
+}
+
+type StatusFilter = 'all' | 'pending' | 'approved' | 'blocked';
+
+interface EmailNotificationLogItem {
+  id: string;
+  to: string;
+  subject: string;
+  channel: 'smtp' | 'apps_script' | 'resend' | 'none';
+  status: 'sent' | 'failed' | 'unconfigured';
+  detail: string;
+  createdAt: string;
+}
+
+function formatDateTimeFR(iso?: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function summarizeUserAgent(ua?: string): string {
+  if (!ua) return 'Navigateur inconnu';
+  const os = /Android/i.test(ua)
+    ? 'Android'
+    : /iPhone|iPad/i.test(ua)
+    ? 'iOS'
+    : /Windows/i.test(ua)
+    ? 'Windows'
+    : /Mac OS/i.test(ua)
+    ? 'macOS'
+    : /Linux/i.test(ua)
+    ? 'Linux'
+    : 'Appareil';
+  const browser = /Edg/i.test(ua)
+    ? 'Edge'
+    : /Chrome/i.test(ua)
+    ? 'Chrome'
+    : /Firefox/i.test(ua)
+    ? 'Firefox'
+    : /Safari/i.test(ua)
+    ? 'Safari'
+    : 'Web';
+  return `${os} · ${browser}`;
 }
 
 export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
   gymName,
-  onAuthenticated,
-  onBack,
+  onBackHome,
   onNotify,
 }) => {
-  const [token, setToken] = useState(getSuperAdminToken);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [pending, setPending] = useState<Membre[]>([]);
-  const [approved, setApproved] = useState<Membre[]>([]);
-  const [members, setMembers] = useState<Membre[]>([]);
-  const [loading, setLoading] = useState(Boolean(token));
-  const [processingId, setProcessingId] = useState('');
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [passwordError, setPasswordError] = useState('');
-  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [token, setToken] = useState<string>(() => getSuperAdminToken());
+  const [adminUsername, setAdminUsername] = useState<string>('superadmin');
 
-  const refreshRequests = useCallback(async (activeToken: string) => {
-    const data = await getSuperAdminRequests(activeToken);
-    setPending(data.pending);
-    setApproved(data.approved);
-    setMembers(data.members);
-  }, []);
+  // Formulaire de connexion Super Admin
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState('');
+
+  // Données de la console
+  const [loading, setLoading] = useState(false);
+  const [gateEnabled, setGateEnabled] = useState(true);
+  const [requests, setRequests] = useState<AccessRequestItem[]>([]);
+  const [updatedAt, setUpdatedAt] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [togglingGate, setTogglingGate] = useState(false);
+
+  // Notifications email d'approbation
+  const [notificationEmail, setNotificationEmail] = useState('manofthetech22@gmail.com');
+  const [emailNotificationsEnabled, setEmailNotificationsEnabled] = useState(true);
+  const [smtpConfigured, setSmtpConfigured] = useState(false);
+  const [appsScriptConfigured, setAppsScriptConfigured] = useState(false);
+  const [emailLogs, setEmailLogs] = useState<EmailNotificationLogItem[]>([]);
+  const [savingNotif, setSavingNotif] = useState(false);
+  const [testingNotif, setTestingNotif] = useState(false);
+
+  // Modale de modification des identifiants Super Admin
+  const [credsModalOpen, setCredsModalOpen] = useState(false);
+  const [currentPwd, setCurrentPwd] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [newPwd, setNewPwd] = useState('');
+  const [confirmPwd, setConfirmPwd] = useState('');
+  const [savingCreds, setSavingCreds] = useState(false);
+
+  // Confirmation suppression
+  const [deleteTarget, setDeleteTarget] = useState<AccessRequestItem | null>(null);
+
+  const currentDeviceId = useMemo(() => getOrCreateDeviceId(), []);
+
+  const loadOverview = useCallback(
+    async (activeToken?: string) => {
+      const authToken = activeToken ?? token;
+      if (!authToken) return;
+      setLoading(true);
+      try {
+        const res = await fetch('/api/super-admin/overview', {
+          headers: { Authorization: `Bearer ${authToken}` },
+          cache: 'no-store',
+        });
+        const data = (await res.json()) as {
+          ok?: boolean;
+          error?: string;
+          gateEnabled?: boolean;
+          username?: string;
+          updatedAt?: string;
+          requests?: AccessRequestItem[];
+          notificationEmail?: string;
+          emailNotificationsEnabled?: boolean;
+          smtpConfigured?: boolean;
+          appsScriptConfigured?: boolean;
+          emailLogs?: EmailNotificationLogItem[];
+        };
+        if (res.status === 401) {
+          setSuperAdminToken('');
+          setToken('');
+          onNotify('error', 'Session Super Admin expirée. Veuillez vous reconnecter.');
+          return;
+        }
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || 'Chargement impossible.');
+        }
+        setGateEnabled(Boolean(data.gateEnabled));
+        setAdminUsername(data.username || 'superadmin');
+        setUpdatedAt(data.updatedAt || '');
+        setRequests(Array.isArray(data.requests) ? data.requests : []);
+        if (data.notificationEmail) setNotificationEmail(data.notificationEmail);
+        if (typeof data.emailNotificationsEnabled === 'boolean') {
+          setEmailNotificationsEnabled(data.emailNotificationsEnabled);
+        }
+        setSmtpConfigured(Boolean(data.smtpConfigured));
+        setAppsScriptConfigured(Boolean(data.appsScriptConfigured));
+        setEmailLogs(Array.isArray(data.emailLogs) ? data.emailLogs : []);
+      } catch (err) {
+        onNotify(
+          'error',
+          err instanceof Error ? err.message : 'Erreur de communication avec le serveur.'
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [token, onNotify]
+  );
+
+  const handleSaveNotifConfig = async (nextEnabled?: boolean) => {
+    const enabledVal = typeof nextEnabled === 'boolean' ? nextEnabled : emailNotificationsEnabled;
+    setSavingNotif(true);
+    try {
+      const res = await fetch('/api/super-admin/notifications/config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          notificationEmail: notificationEmail.trim(),
+          emailNotificationsEnabled: enabledVal,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        notificationEmail?: string;
+        emailNotificationsEnabled?: boolean;
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Enregistrement impossible.');
+      }
+      if (data.notificationEmail) setNotificationEmail(data.notificationEmail);
+      if (typeof data.emailNotificationsEnabled === 'boolean') {
+        setEmailNotificationsEnabled(data.emailNotificationsEnabled);
+      }
+      onNotify(
+        'success',
+        `Notifications email ${
+          data.emailNotificationsEnabled ? 'activées' : 'désactivées'
+        } pour ${data.notificationEmail}.`
+      );
+    } catch (err) {
+      onNotify('error', err instanceof Error ? err.message : 'Erreur serveur.');
+    } finally {
+      setSavingNotif(false);
+    }
+  };
+
+  const handleTestNotifEmail = async () => {
+    setTestingNotif(true);
+    try {
+      const res = await fetch('/api/super-admin/notifications/test', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        log?: EmailNotificationLogItem;
+        emailLogs?: EmailNotificationLogItem[];
+      };
+      if (Array.isArray(data.emailLogs)) {
+        setEmailLogs(data.emailLogs);
+      }
+      if (data.ok) {
+        onNotify('success', data.log?.detail || `Email de test envoyé à ${notificationEmail}.`);
+      } else {
+        onNotify(
+          'error',
+          data.log?.detail || 'Envoi impossible. Vérifiez la configuration SMTP ou Apps Script.'
+        );
+      }
+    } catch {
+      onNotify('error', 'Erreur lors du test d’envoi email.');
+    } finally {
+      setTestingNotif(false);
+    }
+  };
 
   useEffect(() => {
-    if (!token) return;
-    let active = true;
-    getSuperAdminRequests(token)
-      .then((data) => {
-        if (active) {
-          setPending(data.pending);
-          setApproved(data.approved);
-          setMembers(data.members);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-        clearSuperAdminToken();
-        setToken('');
-        setLoginError(error instanceof Error ? error.message : 'Session super admin expirée.');
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [token]);
+    if (token) {
+      loadOverview(token);
+    }
+  }, [token, loadOverview]);
 
-  const handleLogin = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setLoginError('');
-    setLoading(true);
+    setLoginLoading(true);
     try {
-      const newToken = await loginSuperAdmin(username, password);
-      setToken(newToken);
-      setPassword('');
-      onAuthenticated();
-    } catch (error) {
-      setLoginError(error instanceof Error ? error.message : 'Connexion super admin impossible.');
-      setLoading(false);
-    }
-  };
-
-  const importApprovedMember = async (member: Membre) => {
-    if (!token) return;
-    setProcessingId(member.id);
-    try {
-      await saveRecord<Membre>('Membres', {
-        ...member,
-        statut: 'actif',
+      const res = await fetch('/api/super-admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: loginUser.trim(),
+          password: loginPassword,
+        }),
       });
-      const completed = await decideSuperAdminRequest(token, member.id, 'complete');
-      if (completed.member) await saveRecord<Membre>('Membres', { ...completed.member });
-      await refreshRequests(token);
-      onNotify(
-        'success',
-        `${member.prenom} ${member.nom} est maintenant actif.`
-      );
-    } catch (error) {
-      onNotify(
-        'error',
-        error instanceof Error ? error.message : 'Impossible d’importer cette demande approuvée.'
-      );
-      if (token) await refreshRequests(token).catch(() => undefined);
+      const data = (await res.json()) as {
+        ok?: boolean;
+        token?: string;
+        username?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.ok || !data.token) {
+        setLoginError(data.error || 'Identifiants invalides.');
+        return;
+      }
+      setSuperAdminToken(data.token);
+      setToken(data.token);
+      setAdminUsername(data.username || loginUser.trim());
+      setLoginPassword('');
+      onNotify('success', 'Connexion à l’espace Super Admin réussie.');
+    } catch {
+      setLoginError('Impossible de joindre le serveur Super Admin.');
     } finally {
-      setProcessingId('');
+      setLoginLoading(false);
     }
   };
 
-  const handleApprove = async (member: Membre) => {
-    if (!token) return;
-    setProcessingId(member.id);
-    try {
-      const result = await decideSuperAdminRequest(token, member.id, 'approve');
-      const approvedMember = result.member || member;
-      await saveRecord<Membre>('Membres', {
-        ...approvedMember,
-        statut: 'actif',
-      });
-      const completed = await decideSuperAdminRequest(token, member.id, 'complete');
-      if (completed.member) await saveRecord<Membre>('Membres', { ...completed.member });
-      await refreshRequests(token);
-      onNotify(
-        'success',
-        `Demande approuvée : ${member.prenom} ${member.nom} est maintenant actif.`
-      );
-    } catch (error) {
-      onNotify(
-        'error',
-        error instanceof Error ? error.message : 'Impossible de traiter cette demande.'
-      );
-      await refreshRequests(token).catch(() => undefined);
-    } finally {
-      setProcessingId('');
-    }
-  };
-
-  const handleReject = async (member: Membre) => {
-    if (!token) return;
-    setProcessingId(member.id);
-    try {
-      await decideSuperAdminRequest(token, member.id, 'reject');
-      await refreshRequests(token);
-      onNotify('info', `Demande de ${member.prenom} ${member.nom} refusée.`);
-    } catch (error) {
-      onNotify(
-        'error',
-        error instanceof Error ? error.message : 'Impossible de refuser cette demande.'
-      );
-    } finally {
-      setProcessingId('');
-    }
-  };
-
-  const handleToggleMember = async (member: Membre) => {
-    if (!token || (member.statut !== 'actif' && member.statut !== 'suspendu')) return;
-    const nextStatus = member.statut === 'actif' ? 'suspendu' : 'actif';
-    setProcessingId(member.id);
-    try {
-      const updated = await updateLinkedMemberStatus(token, member.id, nextStatus);
-      await saveRecord<Membre>('Membres', { ...updated });
-      await refreshRequests(token);
-      onNotify(
-        'success',
-        `${member.prenom} ${member.nom} : compte ${
-          nextStatus === 'actif' ? 'activé' : 'désactivé'
-        }.`
-      );
-    } catch (error) {
-      onNotify(
-        'error',
-        error instanceof Error ? error.message : 'Impossible de modifier le statut du membre.'
-      );
-      await refreshRequests(token).catch(() => undefined);
-    } finally {
-      setProcessingId('');
-    }
-  };
-
-  const handleChangePassword = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setPasswordError('');
-    if (newPassword.length < 12) {
-      setPasswordError('Le nouveau mot de passe doit contenir au moins 12 caractères.');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      setPasswordError('La confirmation ne correspond pas au nouveau mot de passe.');
-      return;
-    }
-
-    setPasswordSaving(true);
-    try {
-      await changeSuperAdminPassword(token, currentPassword, newPassword);
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
-      onNotify('success', 'Mot de passe Super Admin modifié avec succès.');
-    } catch (error) {
-      setPasswordError(
-        error instanceof Error ? error.message : 'Impossible de modifier le mot de passe.'
-      );
-    } finally {
-      setPasswordSaving(false);
-    }
-  };
-
-  const handleLogout = () => {
-    clearSuperAdminToken();
+  const handleLogoutSuperAdmin = () => {
+    setSuperAdminToken('');
     setToken('');
-    setPending([]);
-    setApproved([]);
-    setMembers([]);
-    setLoginError('');
+    setRequests([]);
+    onNotify('info', 'Session Super Admin fermée.');
   };
 
-  return (
-    <div className="min-h-screen bg-slate-50 dark:bg-[#0d0f14]">
-      <header className="border-b border-slate-200 bg-white/90 dark:border-[#262b38] dark:bg-[#11141c]">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
-          <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-orange-600 text-white shadow-lg shadow-orange-600/20">
-              <MaterialIcon name="verified" className="h-6 w-6" />
+  const handleToggleGate = async () => {
+    setTogglingGate(true);
+    try {
+      const next = !gateEnabled;
+      const res = await fetch('/api/super-admin/gate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ enabled: next }),
+      });
+      const data = (await res.json()) as { ok?: boolean; gateEnabled?: boolean; error?: string };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Mise à jour impossible.');
+      }
+      setGateEnabled(Boolean(data.gateEnabled));
+      onNotify(
+        'success',
+        data.gateEnabled
+          ? 'Contrôle d’accès activé : toute nouvelle personne devra obtenir votre approbation avant connexion.'
+          : 'Contrôle d’accès désactivé : la connexion standard est ouverte sans approbation préalable.'
+      );
+    } catch (err) {
+      onNotify('error', err instanceof Error ? err.message : 'Erreur serveur.');
+    } finally {
+      setTogglingGate(false);
+    }
+  };
+
+  const handleAuthorizeCurrentDevice = async () => {
+    setBusyId('current-device');
+    try {
+      const res = await fetch('/api/super-admin/authorize-device', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          deviceId: currentDeviceId,
+          nomComplet: `Super Admin (${adminUsername})`,
+          telephone: 'Poste de direction',
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        requests?: AccessRequestItem[];
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Autorisation impossible.');
+      }
+      setCachedDeviceApproved(true);
+      if (Array.isArray(data.requests)) setRequests(data.requests);
+      onNotify('success', 'Cet appareil a été autorisé immédiatement pour la connexion.');
+    } catch (err) {
+      onNotify('error', err instanceof Error ? err.message : 'Erreur serveur.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDecision = async (
+    id: string,
+    action: 'approve' | 'reject' | 'revoke' | 'pending' | 'delete'
+  ) => {
+    setBusyId(id);
+    try {
+      const res = await fetch(`/api/super-admin/requests/${encodeURIComponent(id)}/decision`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        requests?: AccessRequestItem[];
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Action impossible.');
+      }
+      if (Array.isArray(data.requests)) {
+        setRequests(data.requests);
+      }
+      const labels: Record<typeof action, string> = {
+        approve: 'Accès approuvé : la personne peut maintenant se connecter.',
+        reject: 'Demande refusée.',
+        revoke: 'Accès révoqué : cet appareil ne pourra plus se connecter.',
+        pending: 'Demande remise en attente.',
+        delete: 'Demande supprimée de la liste.',
+      };
+      onNotify('success', labels[action]);
+    } catch (err) {
+      onNotify('error', err instanceof Error ? err.message : 'Erreur serveur.');
+    } finally {
+      setBusyId(null);
+      setDeleteTarget(null);
+    }
+  };
+
+  const handleSaveCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPwd && newPwd !== confirmPwd) {
+      onNotify('error', 'La confirmation du nouveau mot de passe ne correspond pas.');
+      return;
+    }
+    setSavingCreds(true);
+    try {
+      const res = await fetch('/api/super-admin/credentials', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          currentPassword: currentPwd,
+          newUsername: newUsername.trim(),
+          newPassword: newPwd,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        token?: string;
+        username?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Mise à jour impossible.');
+      }
+      if (data.token) {
+        setSuperAdminToken(data.token);
+        setToken(data.token);
+      }
+      if (data.username) {
+        setAdminUsername(data.username);
+      }
+      setCredsModalOpen(false);
+      setCurrentPwd('');
+      setNewUsername('');
+      setNewPwd('');
+      setConfirmPwd('');
+      onNotify('success', 'Identifiants Super Admin mis à jour.');
+    } catch (err) {
+      onNotify('error', err instanceof Error ? err.message : 'Erreur serveur.');
+    } finally {
+      setSavingCreds(false);
+    }
+  };
+
+  const handleCopyPrivateUrl = async () => {
+    const privateUrl = `${window.location.origin}/?superadmin=1`;
+    try {
+      await navigator.clipboard.writeText(privateUrl);
+      onNotify('success', 'Lien privé Super Admin copié. Gardez-le confidentiel.');
+    } catch {
+      onNotify('info', `Lien privé : ${privateUrl}`);
+    }
+  };
+
+  const stats = useMemo(() => {
+    const total = requests.length;
+    const pending = requests.filter((r) => r.status === 'pending').length;
+    const approved = requests.filter((r) => r.status === 'approved').length;
+    const blocked = requests.filter(
+      (r) => r.status === 'rejected' || r.status === 'revoked'
+    ).length;
+    return { total, pending, approved, blocked };
+  }, [requests]);
+
+  const filteredRequests = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return requests.filter((r) => {
+      if (statusFilter === 'pending' && r.status !== 'pending') return false;
+      if (statusFilter === 'approved' && r.status !== 'approved') return false;
+      if (
+        statusFilter === 'blocked' &&
+        r.status !== 'rejected' &&
+        r.status !== 'revoked'
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        r.nomComplet.toLowerCase().includes(q) ||
+        r.telephone.toLowerCase().includes(q) ||
+        r.email.toLowerCase().includes(q) ||
+        r.posteSouhaite.toLowerCase().includes(q) ||
+        r.deviceId.toLowerCase().includes(q)
+      );
+    });
+  }, [requests, search, statusFilter]);
+
+  const isCurrentDeviceApproved = useMemo(
+    () => requests.some((r) => r.deviceId === currentDeviceId && r.status === 'approved'),
+    [requests, currentDeviceId]
+  );
+
+  // ============================================================================
+  // ÉCRAN D'AUTHENTIFICATION PRIVÉ SUPER ADMIN
+  // ============================================================================
+  if (!token) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-[#0d0f14] flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md rounded-2xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-6 sm:p-8 shadow-sm">
+          <div className="flex items-center gap-3.5 mb-6">
+            <span className="w-11 h-11 rounded-xl bg-slate-900 dark:bg-orange-600 text-white flex items-center justify-center shrink-0">
+              <MaterialIcon name="admin_panel_settings" className="w-6 h-6" />
             </span>
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-orange-600 dark:text-orange-400">
-                Espace privé
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-orange-600 dark:text-orange-400">
+                Accès Réservé · {gymName}
               </p>
-              <h1 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-                Super administration
+              <h1 className="font-display text-xl font-bold text-slate-900 dark:text-white truncate">
+                Espace Super Admin
               </h1>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {token && (
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-[#262b38] dark:text-slate-300 dark:hover:bg-slate-800"
+
+          <p className="text-sm text-slate-600 dark:text-slate-400 mb-6 leading-relaxed">
+            Console privée de gouvernance et d’approbation des utilisateurs qui accèdent à l’application via le lien partagé.
+          </p>
+
+          {loginError && (
+            <div
+              role="alert"
+              className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-sm text-red-700 dark:text-red-300 flex items-center gap-2"
+            >
+              <MaterialIcon name="warning" className="w-4 h-4 shrink-0" />
+              <span>{loginError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleLoginSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="sa-username"
+                className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5"
               >
-                Verrouiller
-              </button>
-            )}
+                Identifiant Super Admin
+              </label>
+              <input
+                id="sa-username"
+                type="text"
+                autoComplete="username"
+                required
+                value={loginUser}
+                onChange={(e) => setLoginUser(e.target.value)}
+                placeholder="Identifiant confidentiel"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="sa-password"
+                className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5"
+              >
+                Mot de passe Super Admin
+              </label>
+              <input
+                id="sa-password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="••••••••••••"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loginLoading}
+              title="Ouvrir la console privée Super Admin"
+              className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-orange-600 dark:hover:bg-orange-700 text-white font-semibold text-sm transition-colors disabled:opacity-60 whitespace-nowrap"
+            >
+              {loginLoading ? 'Vérification...' : 'Accéder à la console'}
+            </button>
+          </form>
+
+          <div className="mt-6 pt-4 border-t border-slate-200 dark:border-[#262b38] flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+            <span>Lien non public</span>
             <button
               type="button"
-              onClick={onBack}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+              onClick={onBackHome}
+              title="Quitter l’espace Super Admin et revenir à l’accueil"
+              className="font-medium text-orange-600 dark:text-orange-400 hover:underline whitespace-nowrap"
             >
-              <MaterialIcon name="chevron_left" className="h-4 w-4" />
-              Retour à l’application
+              Retour à l’accueil
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // CONSOLE PROFESSIONNELLE SUPER ADMIN
+  // ============================================================================
+  return (
+    <div className="min-h-screen bg-slate-50 dark:bg-[#0d0f14] text-slate-900 dark:text-slate-100">
+      {/* Barre supérieure professionnelle */}
+      <header className="sticky top-0 z-30 bg-white/95 dark:bg-[#111318]/95 backdrop-blur border-b border-slate-200 dark:border-[#262b38]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="w-9 h-9 rounded-lg bg-slate-900 dark:bg-orange-600 text-white flex items-center justify-center shrink-0">
+              <MaterialIcon name="admin_panel_settings" className="w-5 h-5" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <span className="truncate">{gymName}</span>
+                <span>/</span>
+                <span className="font-medium text-slate-700 dark:text-slate-200">
+                  Super Admin
+                </span>
+              </div>
+              <h1 className="font-display text-base sm:text-lg font-bold text-slate-900 dark:text-white truncate">
+                Approbation & Contrôle d’Accès
+              </h1>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => loadOverview()}
+              disabled={loading}
+              title="Actualiser la liste des demandes d’accès"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 dark:border-[#262b38] bg-white dark:bg-[#151821] hover:bg-slate-50 dark:hover:bg-[#1b202c] text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0"
+            >
+              <MaterialIcon name="refresh" className="w-4 h-4" />
+              <span className="hidden sm:inline">Actualiser</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setNewUsername(adminUsername);
+                setCredsModalOpen(true);
+              }}
+              title="Modifier l’identifiant ou le mot de passe Super Admin"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 dark:border-[#262b38] bg-white dark:bg-[#151821] hover:bg-slate-50 dark:hover:bg-[#1b202c] text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0"
+            >
+              <MaterialIcon name="key" className="w-4 h-4" />
+              <span className="hidden sm:inline">Identifiants</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleLogoutSuperAdmin}
+              title="Fermer la session Super Admin"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-red-600 dark:hover:bg-red-700 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
+            >
+              <MaterialIcon name="logout" className="w-4 h-4" />
+              <span>Quitter</span>
             </button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl space-y-6 px-4 py-7 sm:px-6">
-        {!token ? (
-          <section className="mx-auto mt-8 max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-xl dark:border-[#262b38] dark:bg-[#151821] sm:p-8">
-            <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-orange-500/10 text-orange-600 dark:text-orange-400">
-              <MaterialIcon name="lock" className="h-7 w-7" />
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Bandeau de gouvernance + activation de la barrière avant connexion */}
+        <section className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2.5 text-sm font-semibold text-slate-900 dark:text-white">
+              <MaterialIcon
+                name={gateEnabled ? 'verified_user' : 'warning'}
+                className={`w-5 h-5 ${
+                  gateEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-500'
+                }`}
+              />
+              <span>
+                Approbation obligatoire avant connexion :{' '}
+                <span
+                  className={
+                    gateEnabled
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                  }
+                >
+                  {gateEnabled ? 'Activée' : 'Désactivée'}
+                </span>
+              </span>
             </div>
-            <h2 className="font-display text-2xl font-bold text-slate-900 dark:text-white">
-              Accès propriétaire
-            </h2>
-            <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-              Connectez-vous pour consulter et approuver les demandes reçues par votre lien
-              d’inscription. Cette page ne fait pas partie du lien partagé aux membres.
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
+              {gateEnabled
+                ? 'Toute personne qui reçoit le lien partagé doit soumettre une demande et obtenir votre validation ici avant d’accéder à l’écran de connexion.'
+                : 'Attention : les personnes disposant du lien peuvent accéder directement à l’écran de connexion sans approbation préalable.'}
             </p>
-            {loginError && (
-              <p role="alert" className="mt-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
-                {loginError}
-              </p>
-            )}
-            <form onSubmit={handleLogin} className="mt-6 space-y-4">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-200">
-                Identifiant super admin
-                <input
-                  autoComplete="username"
-                  required
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  className="mt-1.5 w-full rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-3 text-sm dark:border-[#303646] dark:bg-[#0d0f14] dark:text-white"
-                />
-              </label>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-200">
-                Mot de passe
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  className="mt-1.5 w-full rounded-xl border border-slate-300 bg-slate-50 px-3.5 py-3 text-sm dark:border-[#303646] dark:bg-[#0d0f14] dark:text-white"
-                />
-              </label>
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-mono-num">
+              Connecté en tant que {adminUsername} · Cet espace privé n’est jamais inclus dans les liens de partage
+              {updatedAt ? ` · MàJ identifiants : ${formatDateTimeFR(updatedAt)}` : ''}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {!isCurrentDeviceApproved && (
               <button
-                type="submit"
-                disabled={loading}
-                className="w-full rounded-xl bg-orange-600 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-orange-700 disabled:opacity-60"
+                type="button"
+                onClick={handleAuthorizeCurrentDevice}
+                disabled={busyId === 'current-device'}
+                title="Autoriser immédiatement votre propre navigateur pour accéder à l’application"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-60"
               >
-                {loading ? 'Vérification…' : 'Ouvrir mon espace sécurisé'}
+                <MaterialIcon name="devices" className="w-4 h-4" />
+                <span>Autoriser cet appareil</span>
               </button>
-            </form>
-          </section>
-        ) : (
-          <>
-            <section className="overflow-hidden rounded-3xl bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-6 text-white shadow-xl sm:p-8">
-              <div className="flex flex-wrap items-end justify-between gap-5">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-orange-300">
-                    {gymName}
-                  </p>
-                  <h2 className="mt-2 font-display text-2xl font-extrabold sm:text-3xl">
-                    Centre de contrôle des inscriptions
-                  </h2>
-                  <p className="mt-2 max-w-2xl text-sm text-slate-300">
-                    Approuvez les demandes, gérez l’accès des adhérents et sécurisez votre mot de passe.
-                  </p>
-                </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleCopyPrivateUrl}
+              title="Copier le lien confidentiel d’accès à votre espace Super Admin"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 dark:border-[#262b38] bg-slate-50 dark:bg-[#0d0f14] hover:bg-slate-100 dark:hover:bg-[#1b202c] text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap shrink-0"
+            >
+              <MaterialIcon name="content_copy" className="w-4 h-4" />
+              <span>Copier lien privé</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleToggleGate}
+              disabled={togglingGate}
+              title={
+                gateEnabled
+                  ? 'Désactiver temporairement le contrôle avant connexion'
+                  : 'Activer l’approbation obligatoire avant connexion'
+              }
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-60 ${
+                gateEnabled
+                  ? 'border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20'
+                  : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+              }`}
+            >
+              <MaterialIcon name={gateEnabled ? 'lock' : 'verified_user'} className="w-4 h-4" />
+              <span>{gateEnabled ? 'Désactiver le filtre' : 'Activer le filtre'}</span>
+            </button>
+          </div>
+        </section>
+
+        {/* Grille des 4 indicateurs clés (style SaaS flat 1px border, tabular-nums) */}
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <div className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-4">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              Total demandes reçues
+            </p>
+            <p className="mt-2 font-mono-num text-2xl font-bold text-slate-900 dark:text-white">
+              {stats.total}
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-4">
+            <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+              En attente de décision
+            </p>
+            <p className="mt-2 font-mono-num text-2xl font-bold text-amber-600 dark:text-amber-400">
+              {stats.pending}
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-4">
+            <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+              Accès approuvés
+            </p>
+            <p className="mt-2 font-mono-num text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+              {stats.approved}
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-4">
+            <p className="text-xs font-medium text-red-600 dark:text-red-400">
+              Refusés / Révoqués
+            </p>
+            <p className="mt-2 font-mono-num text-2xl font-bold text-red-600 dark:text-red-400">
+              {stats.blocked}
+            </p>
+          </div>
+        </section>
+
+        {/* Notifications Email pour les approbations */}
+        <section className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] p-4 sm:p-5 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                <MaterialIcon name="notifications" className="w-5 h-5 text-orange-500" />
+                <span>Notifications Email d’Approbation</span>
+                <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
+                  ·{' '}
+                  {smtpConfigured
+                    ? 'Canal SMTP Gmail prêt'
+                    : appsScriptConfigured
+                    ? 'Relais Google Apps Script actif'
+                    : 'En attente de relais (SMTP Render ou Code.gs)'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-400">
+                Envoie une alerte automatique dès qu’une personne demande l’autorisation de se connecter ou soumet une inscription QR en attente.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <input
+                type="email"
+                value={notificationEmail}
+                onChange={(e) => setNotificationEmail(e.target.value)}
+                placeholder="manofthetech22@gmail.com"
+                aria-label="Adresse email de notification"
+                className="w-60 px-3 py-2 rounded-lg bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-xs font-mono-num text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+              />
+              <button
+                type="button"
+                onClick={() => handleSaveNotifConfig()}
+                disabled={savingNotif}
+                title="Enregistrer l’adresse email de notification"
+                className="px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-orange-600 dark:hover:bg-orange-700 text-white text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-60"
+              >
+                {savingNotif ? 'Enregistrement...' : 'Enregistrer'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSaveNotifConfig(!emailNotificationsEnabled)}
+                disabled={savingNotif}
+                title={
+                  emailNotificationsEnabled
+                    ? 'Désactiver les alertes par email'
+                    : 'Activer les alertes par email'
+                }
+                className={`px-3 py-2 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-60 ${
+                  emailNotificationsEnabled
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                    : 'border-slate-300 dark:border-[#262b38] text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                {emailNotificationsEnabled ? 'Alertes : ON' : 'Alertes : OFF'}
+              </button>
+              <button
+                type="button"
+                onClick={handleTestNotifEmail}
+                disabled={testingNotif}
+                title="Envoyer un email de test maintenant pour vérifier la réception"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 dark:border-[#262b38] bg-slate-50 dark:bg-[#0d0f14] hover:bg-slate-100 dark:hover:bg-[#1b202c] text-xs font-medium text-slate-700 dark:text-slate-200 transition-colors whitespace-nowrap disabled:opacity-60"
+              >
+                <MaterialIcon name="refresh" className="w-3.5 h-3.5" />
+                <span>{testingNotif ? 'Envoi...' : 'Tester l’envoi'}</span>
+              </button>
+            </div>
+          </div>
+
+          {emailLogs.length > 0 && (
+            <div className="pt-3 border-t border-slate-200 dark:border-[#262b38] space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Derniers envois de notification
+              </p>
+              <div className="space-y-1">
+                {emailLogs.slice(0, 3).map((log) => (
+                  <div
+                    key={log.id}
+                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs py-1 text-slate-600 dark:text-slate-300"
+                  >
+                    <span className="truncate">
+                      <span
+                        className={`font-semibold mr-2 ${
+                          log.status === 'sent'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : log.status === 'failed'
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-amber-600 dark:text-amber-400'
+                        }`}
+                      >
+                        {log.status === 'sent'
+                          ? 'Envoyé'
+                          : log.status === 'failed'
+                          ? 'Échec'
+                          : 'Config requise'}
+                      </span>
+                      {log.subject} — <span className="opacity-80">{log.detail}</span>
+                    </span>
+                    <span className="font-mono-num text-[11px] text-slate-400 shrink-0">
+                      {formatDateTimeFR(log.createdAt)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* Barre de recherche + filtres + liste des demandes */}
+        <section className="rounded-xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] overflow-hidden">
+          <div className="p-4 border-b border-slate-200 dark:border-[#262b38] flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="relative flex-1 max-w-md">
+              <MaterialIcon
+                name="search"
+                className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+              />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Rechercher par nom, téléphone, email, poste ou ID appareil..."
+                className="w-full pl-9 pr-3.5 py-2 rounded-lg bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0d0f14] border border-slate-200 dark:border-[#262b38] overflow-x-auto">
+              {(
+                [
+                  { id: 'all', label: `Tous (${stats.total})` },
+                  { id: 'pending', label: `En attente (${stats.pending})` },
+                  { id: 'approved', label: `Approuvés (${stats.approved})` },
+                  { id: 'blocked', label: `Bloqués (${stats.blocked})` },
+                ] as { id: StatusFilter; label: string }[]
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setStatusFilter(tab.id)}
+                  title={`Filtrer les demandes : ${tab.label}`}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                    statusFilter === tab.id
+                      ? 'bg-white dark:bg-[#1c212e] text-slate-900 dark:text-white shadow-2xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {loading && requests.length === 0 ? (
+            <div className="p-6 space-y-3">
+              {[0, 1, 2].map((idx) => (
+                <div
+                  key={idx}
+                  className="h-12 rounded-lg bg-slate-100 dark:bg-[#1a1f2b] animate-pulse"
+                />
+              ))}
+            </div>
+          ) : filteredRequests.length === 0 ? (
+            <div className="py-14 px-4 text-center space-y-3">
+              <div className="w-12 h-12 mx-auto rounded-xl bg-slate-100 dark:bg-[#1a1f2b] text-slate-500 dark:text-slate-400 flex items-center justify-center">
+                <MaterialIcon name="verified_user" className="w-6 h-6" />
+              </div>
+              <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+                {requests.length === 0
+                  ? 'Aucune demande d’accès enregistrée pour le moment'
+                  : 'Aucun résultat pour ce filtre'}
+              </h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                {requests.length === 0
+                  ? 'Dès qu’une personne ouvrira le lien partagé et tentera de se connecter, sa demande apparaîtra ici pour validation.'
+                  : 'Modifiez votre recherche ou changez de filtre de statut pour afficher d’autres demandes.'}
+              </p>
+              {requests.length === 0 && !isCurrentDeviceApproved && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setLoading(true);
-                    refreshRequests(token)
-                      .catch((error: unknown) =>
-                        onNotify('error', error instanceof Error ? error.message : 'Actualisation impossible.')
-                      )
-                      .finally(() => setLoading(false));
-                  }}
-                  disabled={loading}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-semibold hover:bg-white/15 disabled:opacity-60"
+                  onClick={handleAuthorizeCurrentDevice}
+                  title="Autoriser immédiatement cet appareil pour se connecter"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold transition-colors whitespace-nowrap"
                 >
-                  <MaterialIcon name="refresh" className="h-4 w-4" />
-                  Actualiser
+                  <MaterialIcon name="devices" className="w-4 h-4" />
+                  <span>Autoriser cet appareil</span>
                 </button>
-              </div>
-              <div className="mt-7 grid grid-cols-2 gap-3 sm:max-w-md">
-                <div className="rounded-2xl border border-white/10 bg-white/10 p-4">
-                  <p className="text-xs text-slate-300">À examiner</p>
-                  <p className="mt-1 font-mono-num text-3xl font-extrabold">{pending.length}</p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/10 p-4">
-                  <p className="text-xs text-slate-300">Comptes adhérents</p>
-                  <p className="mt-1 font-mono-num text-3xl font-extrabold">{members.length}</p>
-                </div>
-              </div>
-            </section>
-
-            {loading && (
-              <p className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500 dark:border-[#262b38] dark:bg-[#151821]">
-                Chargement des demandes…
-              </p>
-            )}
-
-            <section className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-                    Demandes d’inscription
-                  </h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    L’approbation active le dossier. Vous pourrez ensuite suspendre ou réactiver chaque adhérent.
-                  </p>
-                </div>
-              </div>
-              {pending.length === 0 && !loading ? (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-9 text-center dark:border-[#303646] dark:bg-[#151821]">
-                  <MaterialIcon name="group" className="mx-auto h-9 w-9 text-slate-400" />
-                  <p className="mt-3 text-sm font-semibold text-slate-700 dark:text-slate-200">
-                    Tout est à jour
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">Les nouvelles demandes apparaîtront ici.</p>
-                </div>
-              ) : (
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {pending.map((member) => (
-                    <article
-                      key={member.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-[#262b38] dark:bg-[#151821]"
-                    >
-                      <div className="flex gap-4">
-                        {member.photo ? (
-                          <img
-                            src={member.photo}
-                            alt={`${member.prenom} ${member.nom}`}
-                            className="h-16 w-16 shrink-0 rounded-2xl object-cover"
-                          />
-                        ) : (
-                          <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-orange-500/10 text-orange-600 dark:text-orange-400">
-                            <MaterialIcon name="person" className="h-8 w-8" />
-                          </span>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <h4 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-                              {member.prenom} {member.nom}
-                            </h4>
-                            <span className="rounded-full bg-amber-500/10 px-2.5 py-1 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">
-                              À examiner
-                            </span>
-                          </div>
-                          <p className="mt-1 text-xs text-slate-500">
-                            Demande {member.code_membre} · {formatDateFR(member.date_inscription)}
-                          </p>
-                          <p className="mt-2 text-sm font-medium text-slate-700 dark:text-slate-200">
-                            {member.telephone || 'Téléphone non renseigné'}
-                          </p>
-                          {member.email && (
-                            <p className="mt-0.5 truncate text-xs text-slate-500">{member.email}</p>
-                          )}
-                        </div>
-                      </div>
-                      {(member.objectif || member.notes_sante) && (
-                        <div className="mt-4 space-y-1 rounded-xl bg-slate-50 p-3 text-xs text-slate-600 dark:bg-[#0d0f14] dark:text-slate-300">
-                          {member.objectif && <p><strong>Objectif :</strong> {member.objectif}</p>}
-                          {member.notes_sante && <p><strong>Notes :</strong> {member.notes_sante}</p>}
-                        </div>
-                      )}
-                      <div className="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-4 dark:border-[#262b38]">
-                        <button
-                          type="button"
-                          disabled={processingId === member.id}
-                          onClick={() => handleReject(member)}
-                          className="rounded-xl border border-red-200 px-3.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/50 dark:text-red-300 dark:hover:bg-red-950/30"
-                        >
-                          Refuser
-                        </button>
-                        <button
-                          type="button"
-                          disabled={Boolean(processingId)}
-                          onClick={() => handleApprove(member)}
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
-                        >
-                          <MaterialIcon name="check_circle" className="h-4 w-4" />
-                          {processingId === member.id ? 'Traitement…' : 'Approuver'}
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
               )}
-            </section>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-[#262b38] bg-slate-50/70 dark:bg-[#11141c] text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    <th className="py-3 px-4">Demandeur</th>
+                    <th className="py-3 px-4">Coordonnées</th>
+                    <th className="py-3 px-4">Appareil</th>
+                    <th className="py-3 px-4">Statut</th>
+                    <th className="py-3 px-4 text-right">Date demande</th>
+                    <th className="py-3 px-4 text-right">Décision</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-[#262b38] text-sm">
+                  {filteredRequests.map((item) => {
+                    const isSelf = item.deviceId === currentDeviceId;
+                    const isBusy = busyId === item.id;
+                    const statusLabel =
+                      item.status === 'approved'
+                        ? 'Approuvé'
+                        : item.status === 'pending'
+                        ? 'En attente'
+                        : item.status === 'rejected'
+                        ? 'Refusé'
+                        : 'Révoqué';
+                    const statusColor =
+                      item.status === 'approved'
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : item.status === 'pending'
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-red-600 dark:text-red-400';
 
-            {approved.length > 0 && (
-              <section className="space-y-3">
-                <h3 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-                  Approbations à terminer
-                </h3>
-                <div className="divide-y divide-slate-200 rounded-2xl border border-slate-200 bg-white dark:divide-[#262b38] dark:border-[#262b38] dark:bg-[#151821]">
-                  {approved.map((member) => (
-                    <div key={member.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
-                      <p className="text-sm font-bold text-slate-900 dark:text-white">
-                        {member.prenom} {member.nom}
-                      </p>
-                      <button
-                        type="button"
-                        disabled={Boolean(processingId)}
-                        onClick={() => importApprovedMember(member)}
-                        className="rounded-xl bg-orange-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-orange-700 disabled:opacity-50"
+                    return (
+                      <tr
+                        key={item.id}
+                        className="hover:bg-slate-50/80 dark:hover:bg-[#191e29] transition-colors"
                       >
-                        Terminer l’activation
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
+                        <td className="py-3 px-4 align-top">
+                          <div className="font-semibold text-slate-900 dark:text-white">
+                            {item.nomComplet}
+                            {isSelf && (
+                              <span className="ml-2 text-[11px] font-normal text-slate-500 dark:text-slate-400">
+                                (Cet appareil)
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            {item.posteSouhaite}
+                            {item.note ? ` · « ${item.note} »` : ''}
+                          </div>
+                        </td>
 
-            <section className="space-y-3">
-              <div>
-                <h3 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-                  Comptes adhérents du lien
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Désactiver suspend l’accès; le dossier et l’abonnement sont conservés.
-                </p>
-              </div>
-              {members.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-7 text-center text-sm text-slate-500 dark:border-[#303646] dark:bg-[#151821]">
-                  Aucun compte approuvé par le lien pour le moment.
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-200 rounded-2xl border border-slate-200 bg-white dark:divide-[#262b38] dark:border-[#262b38] dark:bg-[#151821]">
-                  {members.map((member) => (
-                    <div
-                      key={member.id}
-                      className="flex flex-wrap items-center justify-between gap-3 p-4"
-                    >
-                      <div className="flex min-w-0 items-center gap-3">
-                        {member.photo ? (
-                          <img
-                            src={member.photo}
-                            alt={`${member.prenom} ${member.nom}`}
-                            className="h-11 w-11 rounded-xl object-cover"
-                          />
-                        ) : (
-                          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-orange-500/10 text-orange-600 dark:text-orange-400">
-                            <MaterialIcon name="person" className="h-5 w-5" />
+                        <td className="py-3 px-4 align-top">
+                          <div className="font-mono-num text-xs font-medium text-slate-800 dark:text-slate-200">
+                            {item.telephone}
+                          </div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            {item.email || 'Aucun email'}
+                          </div>
+                        </td>
+
+                        <td className="py-3 px-4 align-top">
+                          <div className="font-mono-num text-xs text-slate-700 dark:text-slate-300">
+                            {item.deviceId.slice(0, 14).toUpperCase()}
+                          </div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            {summarizeUserAgent(item.userAgent)}
+                          </div>
+                        </td>
+
+                        <td className="py-3 px-4 align-top">
+                          <span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${statusColor}`}>
+                            <MaterialIcon
+                              name={
+                                item.status === 'approved'
+                                  ? 'check_circle'
+                                  : item.status === 'pending'
+                                  ? 'schedule'
+                                  : 'block'
+                              }
+                              className="w-4 h-4"
+                            />
+                            <span>{statusLabel}</span>
                           </span>
-                        )}
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold text-slate-900 dark:text-white">
-                            {member.prenom} {member.nom}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            {member.code_membre} · {member.telephone || 'Sans téléphone'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span
-                          className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${
-                            member.statut === 'actif'
-                              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                              : 'bg-red-500/10 text-red-700 dark:text-red-300'
-                          }`}
-                        >
-                          {member.statut === 'actif' ? 'Actif' : 'Désactivé'}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={Boolean(processingId)}
-                          onClick={() => handleToggleMember(member)}
-                          className={`rounded-xl px-3.5 py-2 text-xs font-bold text-white disabled:opacity-50 ${
-                            member.statut === 'actif'
-                              ? 'bg-red-600 hover:bg-red-700'
-                              : 'bg-emerald-600 hover:bg-emerald-700'
-                          }`}
-                        >
-                          {processingId === member.id
-                            ? 'Mise à jour…'
-                            : member.statut === 'actif'
-                              ? 'Désactiver'
-                              : 'Activer'}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
+                        </td>
 
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-[#262b38] dark:bg-[#151821] sm:p-6">
-              <div className="mb-5">
-                <h3 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-                  Sécurité du Super Admin
-                </h3>
-                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                  Modifiez ici le mot de passe utilisé pour cette page. Minimum 12 caractères.
-                </p>
-              </div>
-              <form onSubmit={handleChangePassword} className="grid gap-4 sm:grid-cols-2">
-                <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                  Mot de passe actuel
-                  <input
-                    type="password"
-                    required
-                    autoComplete="current-password"
-                    value={currentPassword}
-                    onChange={(event) => setCurrentPassword(event.target.value)}
-                    className="mt-1.5 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm dark:border-[#303646] dark:bg-[#0d0f14] dark:text-white"
-                  />
-                </label>
-                <span className="hidden sm:block" />
-                <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                  Nouveau mot de passe
-                  <input
-                    type="password"
-                    required
-                    minLength={12}
-                    autoComplete="new-password"
-                    value={newPassword}
-                    onChange={(event) => setNewPassword(event.target.value)}
-                    className="mt-1.5 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm dark:border-[#303646] dark:bg-[#0d0f14] dark:text-white"
-                  />
-                </label>
-                <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                  Confirmer le nouveau mot de passe
-                  <input
-                    type="password"
-                    required
-                    minLength={12}
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    onChange={(event) => setConfirmPassword(event.target.value)}
-                    className="mt-1.5 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm dark:border-[#303646] dark:bg-[#0d0f14] dark:text-white"
-                  />
-                </label>
-                {passwordError && (
-                  <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-700 dark:text-red-300 sm:col-span-2">
-                    {passwordError}
-                  </p>
-                )}
-                <div className="sm:col-span-2">
-                  <button
-                    type="submit"
-                    disabled={passwordSaving}
-                    className="rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-700 disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
-                  >
-                    {passwordSaving ? 'Enregistrement…' : 'Changer le mot de passe'}
-                  </button>
-                </div>
-              </form>
-            </section>
-          </>
-        )}
+                        <td className="py-3 px-4 align-top text-right font-mono-num text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                          {formatDateTimeFR(item.createdAt)}
+                        </td>
+
+                        <td className="py-3 px-4 align-top">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {item.status !== 'approved' && (
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => handleDecision(item.id, 'approve')}
+                                title="Approuver cet utilisateur pour qu’il puisse se connecter"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-50"
+                              >
+                                <MaterialIcon name="check_circle" className="w-3.5 h-3.5" />
+                                <span>Approuver</span>
+                              </button>
+                            )}
+
+                            {item.status === 'pending' && (
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => handleDecision(item.id, 'reject')}
+                                title="Refuser cette demande d’accès"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-500/40 text-red-600 dark:text-red-400 hover:bg-red-500/10 text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-50"
+                              >
+                                <MaterialIcon name="cancel" className="w-3.5 h-3.5" />
+                                <span>Refuser</span>
+                              </button>
+                            )}
+
+                            {item.status === 'approved' && (
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => handleDecision(item.id, 'revoke')}
+                                title="Révoquer immédiatement l’accès de cet appareil"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 text-xs font-semibold transition-colors whitespace-nowrap disabled:opacity-50"
+                              >
+                                <MaterialIcon name="block" className="w-3.5 h-3.5" />
+                                <span>Révoquer</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => setDeleteTarget(item)}
+                              title="Supprimer définitivement cette entrée"
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-[#262b38] text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-[#1f2533] transition-colors disabled:opacity-50"
+                            >
+                              <MaterialIcon name="delete" className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 pt-2">
+          <span>ID de cet appareil : {currentDeviceId.slice(0, 14).toUpperCase()}</span>
+          <button
+            type="button"
+            onClick={onBackHome}
+            title="Ouvrir l’application principale"
+            className="font-medium text-orange-600 dark:text-orange-400 hover:underline whitespace-nowrap"
+          >
+            Ouvrir l’application principale
+          </button>
+        </div>
       </main>
+
+      {/* Modale mise à jour des identifiants Super Admin */}
+      <Modal
+        open={credsModalOpen}
+        onClose={() => setCredsModalOpen(false)}
+        title="Identifiants de l’espace Super Admin"
+        maxWidth="max-w-md"
+      >
+        <form onSubmit={handleSaveCredentials} className="space-y-4">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Modifiez votre identifiant ou votre mot de passe privé. Laissez le nouveau mot de passe vide pour conserver l’actuel.
+          </p>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Mot de passe actuel *
+            </label>
+            <input
+              type="password"
+              required
+              value={currentPwd}
+              onChange={(e) => setCurrentPwd(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Identifiant Super Admin
+            </label>
+            <input
+              type="text"
+              minLength={3}
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Nouveau mot de passe (min. 8 caractères)
+            </label>
+            <input
+              type="password"
+              minLength={8}
+              value={newPwd}
+              onChange={(e) => setNewPwd(e.target.value)}
+              placeholder="Laisser vide pour ne pas changer"
+              className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm"
+            />
+          </div>
+
+          {newPwd && (
+            <div>
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                Confirmer le nouveau mot de passe
+              </label>
+              <input
+                type="password"
+                required
+                value={confirmPwd}
+                onChange={(e) => setConfirmPwd(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm"
+              />
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setCredsModalOpen(false)}
+              title="Annuler la modification des identifiants"
+              className="px-4 py-2 rounded-lg border border-slate-300 dark:border-[#262b38] text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#1a1f2b]"
+            >
+              Annuler
+            </button>
+            <button
+              type="submit"
+              disabled={savingCreds}
+              title="Enregistrer les nouveaux identifiants Super Admin"
+              className="px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold disabled:opacity-60"
+            >
+              {savingCreds ? 'Enregistrement...' : 'Enregistrer'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) {
+            handleDecision(deleteTarget.id, 'delete');
+          }
+        }}
+        title="Supprimer cette demande d’accès ?"
+        message={
+          deleteTarget
+            ? `L’entrée de ${deleteTarget.nomComplet} (${deleteTarget.telephone}) sera supprimée de la console Super Admin.`
+            : ''
+        }
+        confirmLabel="Supprimer"
+        danger
+      />
     </div>
   );
 };
