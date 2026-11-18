@@ -51,6 +51,7 @@ export interface AccessRequestRecord {
   id: string;
   deviceId: string;
   nomComplet: string;
+  nomGym?: string;
   telephone: string;
   email: string;
   posteSouhaite: string;
@@ -452,6 +453,7 @@ function buildAccessRequestEmailContent(
     `Demandeur : ${record.nomComplet}`,
     `Téléphone : ${record.telephone}`,
     `Email : ${record.email || 'Non renseigné'}`,
+    `Nom du gym : ${record.nomGym || 'Non renseigné'}`,
     `Poste demandé : ${record.posteSouhaite}`,
     `Note : ${record.note || 'Aucune'}`,
     `ID appareil : ${record.deviceId}`,
@@ -472,6 +474,7 @@ function buildAccessRequestEmailContent(
         <p style="margin-top:0;">Une personne ayant reçu le lien de l'application demande votre approbation pour se connecter :</p>
         <table style="width:100%;border-collapse:collapse;margin:14px 0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
           <tr><td style="padding:8px 12px;color:#64748b;width:140px;">Nom complet</td><td style="padding:8px 12px;font-weight:bold;">${escapeHtml(record.nomComplet)}</td></tr>
+          <tr><td style="padding:8px 12px;color:#64748b;">Nom du gym</td><td style="padding:8px 12px;font-weight:bold;">${escapeHtml(record.nomGym || '—')}</td></tr>
           <tr><td style="padding:8px 12px;color:#64748b;">Téléphone</td><td style="padding:8px 12px;font-weight:bold;">${escapeHtml(record.telephone)}</td></tr>
           <tr><td style="padding:8px 12px;color:#64748b;">Email</td><td style="padding:8px 12px;">${escapeHtml(record.email || '—')}</td></tr>
           <tr><td style="padding:8px 12px;color:#64748b;">Poste demandé</td><td style="padding:8px 12px;">${escapeHtml(record.posteSouhaite)}</td></tr>
@@ -599,6 +602,7 @@ async function startServer() {
             id: existing.id,
             deviceId: existing.deviceId,
             nomComplet: existing.nomComplet,
+            nomGym: existing.nomGym || '',
             telephone: existing.telephone,
             email: existing.email,
             posteSouhaite: existing.posteSouhaite,
@@ -616,15 +620,16 @@ async function startServer() {
       const b = (req.body || {}) as Record<string, unknown>;
       const deviceId = String(b.deviceId || '').trim().slice(0, 128);
       const nomComplet = String(b.nomComplet || '').trim().slice(0, 120);
+      const nomGym = String(b.nomGym || '').trim().slice(0, 120);
       const telephone = String(b.telephone || '').trim().slice(0, 40);
       const email = String(b.email || '').trim().slice(0, 120);
       const posteSouhaite = String(b.posteSouhaite || 'Caissier / Réception').trim().slice(0, 80);
       const note = String(b.note || '').trim().slice(0, 300);
 
-      if (!deviceId || !nomComplet || !telephone) {
+      if (!deviceId || !nomComplet || !telephone || !nomGym) {
         res.status(400).json({
           ok: false,
-          error: 'Identifiant appareil, nom complet et téléphone sont obligatoires.',
+          error: 'Identifiant appareil, nom complet, nom du gym et téléphone sont obligatoires.',
         });
         return;
       }
@@ -649,6 +654,7 @@ async function startServer() {
           return;
         }
         existing.nomComplet = nomComplet;
+        existing.nomGym = nomGym;
         existing.telephone = telephone;
         existing.email = email;
         existing.posteSouhaite = posteSouhaite;
@@ -679,6 +685,7 @@ async function startServer() {
         id: crypto.randomUUID(),
         deviceId,
         nomComplet,
+        nomGym,
         telephone,
         email,
         posteSouhaite,

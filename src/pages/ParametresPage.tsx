@@ -165,7 +165,17 @@ export const ParametresPage: React.FC<ParametresPageProps> = ({
       setGymForm((prev) => ({ ...prev, logo: b64 }));
     } catch (err) {
       onNotify('error', err instanceof Error ? err.message : 'Image invalide.');
+    } finally {
+      e.target.value = '';
     }
+  };
+
+  const handleRemoveLogo = async () => {
+    setGymForm((prev) => ({ ...prev, logo: '' }));
+    const updated = await saveGymConfig({ logo: '' });
+    await logAction(user.nom_utilisateur, 'Paramètres gym', 'Logo du gym supprimé');
+    onConfigUpdated(updated);
+    onNotify('success', 'Logo supprimé.');
   };
 
   const handleSaveReglements = async (e: React.FormEvent) => {
@@ -688,7 +698,7 @@ export const ParametresPage: React.FC<ParametresPageProps> = ({
             onSubmit={handleSaveGym}
             className="lg:col-span-7 p-6 rounded-2xl bg-white dark:bg-[#151821] border border-slate-200 dark:border-[#262b38] space-y-5"
           >
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-4">
               {gymForm.logo ? (
                 <img
                   src={gymForm.logo}
@@ -700,14 +710,27 @@ export const ParametresPage: React.FC<ParametresPageProps> = ({
                   <MaterialIcon name="fitness_center" className="w-7 h-7" />
                 </div>
               )}
-              <label
-                title="Importer le logo de votre salle de sport"
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-medium cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800"
-              >
-                <MaterialIcon name="upload" className="w-4 h-4" />
-                Changer le logo
-                <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
-              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <label
+                  title="Importer le logo de votre salle de sport"
+                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-medium cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
+                >
+                  <MaterialIcon name="upload" className="w-4 h-4" />
+                  Changer le logo
+                  <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
+                </label>
+                {gymForm.logo && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveLogo}
+                    title="Supprimer définitivement le logo du gym"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 text-xs font-medium transition-colors whitespace-nowrap"
+                  >
+                    <MaterialIcon name="delete" className="w-4 h-4" />
+                    Supprimer le logo
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

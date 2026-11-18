@@ -1,3 +1,4 @@
+import { saveGymConfig } from './db';
 import { generateUUID } from './utils';
 
 export type AccessRequestStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'revoked';
@@ -6,6 +7,7 @@ export interface AccessRequestItem {
   id: string;
   deviceId: string;
   nomComplet: string;
+  nomGym?: string;
   telephone: string;
   email: string;
   posteSouhaite: string;
@@ -27,6 +29,7 @@ export interface AccessStatusResponse {
 const DEVICE_ID_KEY = 'gympro_device_id';
 const DEVICE_APPROVED_KEY = 'gympro_device_approved';
 const SUPER_ADMIN_TOKEN_KEY = 'gympro_sa_token';
+const APPLIED_GYM_NAME_KEY = 'gympro_applied_gym_name_req';
 
 export function getOrCreateDeviceId(): string {
   try {
@@ -143,9 +146,29 @@ export async function fetchAccessStatus(deviceId: string): Promise<AccessStatusR
   return data;
 }
 
+export async function applyApprovedGymNameIfNeeded(
+  request?: AccessRequestItem | null
+): Promise<boolean> {
+  if (!request || request.status !== 'approved') return false;
+  const gymName = String(request.nomGym || '').trim();
+  if (!gymName) return false;
+  const stamp = `${request.id}:${gymName}`;
+  try {
+    if (localStorage.getItem(APPLIED_GYM_NAME_KEY) === stamp) {
+      return false;
+    }
+    await saveGymConfig({ nom_gym: gymName });
+    localStorage.setItem(APPLIED_GYM_NAME_KEY, stamp);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function submitAccessRequest(payload: {
   deviceId: string;
   nomComplet: string;
+  nomGym: string;
   telephone: string;
   email: string;
   posteSouhaite: string;

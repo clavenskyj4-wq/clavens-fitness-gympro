@@ -618,6 +618,7 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
       if (!q) return true;
       return (
         r.nomComplet.toLowerCase().includes(q) ||
+        (r.nomGym || '').toLowerCase().includes(q) ||
         r.telephone.toLowerCase().includes(q) ||
         r.email.toLowerCase().includes(q) ||
         r.posteSouhaite.toLowerCase().includes(q) ||
@@ -1237,6 +1238,11 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
                             )}
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            {item.nomGym ? (
+                              <span className="font-semibold text-orange-600 dark:text-orange-400 mr-1.5">
+                                {item.nomGym} ·
+                              </span>
+                            ) : null}
                             {item.posteSouhaite}
                             {item.note ? ` · « ${item.note} »` : ''}
                           </div>

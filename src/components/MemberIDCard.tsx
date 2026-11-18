@@ -99,38 +99,42 @@ export const MemberIDCard: React.FC<MemberIDCardProps> = ({
 
       {/* Corps central de la carte : Filigrane athlète & logo transparents + Photo + Coordonnées + QR Code */}
       <div className="relative overflow-hidden px-4 py-3 flex items-stretch justify-between gap-3 bg-gradient-to-br from-white via-slate-50 to-slate-100">
-        {/* Logo du gym en transparence (centre du corps de la carte) */}
+        {/* Logo du gym en transparence avec bordure arrondie (centre du corps de la carte) */}
         <div
           aria-hidden="true"
           className="pointer-events-none select-none absolute inset-0 flex items-center justify-center z-0"
         >
           {config.logo ? (
-            <img
-              src={config.logo}
-              alt=""
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = 'none';
-              }}
-              className="w-28 h-28 object-contain opacity-[0.08] grayscale"
-            />
-          ) : (
-            <svg
-              viewBox="0 0 120 120"
-              className="w-28 h-28 text-slate-900 opacity-[0.07]"
-              fill="currentColor"
-            >
-              <circle
-                cx="60"
-                cy="60"
-                r="52"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="4"
-                strokeDasharray="6 4"
+            <div className="w-28 h-28 rounded-2xl border-2 border-slate-900/50 bg-white/40 p-1.5 opacity-[0.11] overflow-hidden flex items-center justify-center">
+              <img
+                src={config.logo}
+                alt=""
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = 'none';
+                }}
+                className="w-full h-full rounded-xl object-contain grayscale"
               />
-              <circle cx="60" cy="60" r="40" fill="none" stroke="currentColor" strokeWidth="2.5" />
-              <path d="M84 68l4-4-4-4-10 10-24-24 10-10-4-4-4 4-4-4-6 6 4 4-4 4 4 4 10-10 24 24-10 10 4 4 4-4 4 4 6-6-4-4z" />
-            </svg>
+            </div>
+          ) : (
+            <div className="w-28 h-28 rounded-2xl border-2 border-slate-900/40 p-2 opacity-[0.08] flex items-center justify-center">
+              <svg
+                viewBox="0 0 120 120"
+                className="w-full h-full text-slate-900"
+                fill="currentColor"
+              >
+                <circle
+                  cx="60"
+                  cy="60"
+                  r="52"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                  strokeDasharray="6 4"
+                />
+                <circle cx="60" cy="60" r="40" fill="none" stroke="currentColor" strokeWidth="2.5" />
+                <path d="M84 68l4-4-4-4-10 10-24-24 10-10-4-4-4 4-4-4-6 6 4 4-4 4 4 4 10-10 24 24-10 10 4 4 4-4 4 4 6-6-4-4z" />
+              </svg>
+            </div>
           )}
         </div>
 
@@ -261,6 +265,23 @@ function drawRoundedRect(
   ctx.closePath();
 }
 
+function formatMemberCardFilename(member: Membre): string {
+  const cleanPart = (val: string) =>
+    String(val || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+  const parts = [cleanPart(member.nom), cleanPart(member.prenom)].filter(Boolean);
+  if (parts.length > 0) {
+    return `Carte_${parts.join('_')}.png`;
+  }
+  const fallback = cleanPart(member.code_membre) || 'Membre';
+  return `Carte_${fallback}.png`;
+}
+
 /**
  * Exporte la carte de membre professionnelle en image PNG haute résolution (100 % hors ligne).
  */
@@ -358,34 +379,49 @@ export async function downloadMemberCardPNG(
   ctx.rect(0, 132, W, 394);
   ctx.clip();
 
-  // Logo du gym en transparence centré dans la zone centrale
+  // Logo du gym en transparence avec bordure arrondie centré dans la zone centrale
   if (logoImg) {
     ctx.save();
-    ctx.globalAlpha = 0.08;
+    ctx.globalAlpha = 0.11;
     const wmLogoSize = 230;
     const wmLogoX = W / 2 - wmLogoSize / 2;
     const wmLogoY = 132 + (394 - wmLogoSize) / 2;
-    ctx.drawImage(logoImg, wmLogoX, wmLogoY, wmLogoSize, wmLogoSize);
+    ctx.save();
+    drawRoundedRect(ctx, wmLogoX, wmLogoY, wmLogoSize, wmLogoSize, 32);
+    ctx.clip();
+    ctx.drawImage(logoImg, wmLogoX + 10, wmLogoY + 10, wmLogoSize - 20, wmLogoSize - 20);
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.5)';
+    ctx.lineWidth = 4;
+    drawRoundedRect(ctx, wmLogoX, wmLogoY, wmLogoSize, wmLogoSize, 32);
+    ctx.stroke();
     ctx.restore();
   } else {
     ctx.save();
-    ctx.globalAlpha = 0.07;
+    ctx.globalAlpha = 0.08;
+    const wmBoxSize = 230;
+    const wmBoxX = W / 2 - wmBoxSize / 2;
+    const wmBoxY = 132 + (394 - wmBoxSize) / 2;
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
+    ctx.lineWidth = 4;
+    drawRoundedRect(ctx, wmBoxX, wmBoxY, wmBoxSize, wmBoxSize, 32);
+    ctx.stroke();
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = 5;
     ctx.beginPath();
-    ctx.arc(W / 2, 329, 108, 0, Math.PI * 2);
+    ctx.arc(W / 2, 329, 88, 0, Math.PI * 2);
     ctx.stroke();
     ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.arc(W / 2, 329, 86, 0, Math.PI * 2);
+    ctx.arc(W / 2, 329, 70, 0, Math.PI * 2);
     ctx.stroke();
     ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 42px Montserrat, sans-serif';
+    ctx.font = 'bold 40px Montserrat, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(
       (config.nom_gym || 'GYMPRO').slice(0, 2).toUpperCase(),
       W / 2,
-      344
+      343
     );
     ctx.restore();
   }
@@ -534,7 +570,7 @@ export async function downloadMemberCardPNG(
   const dataUrl = canvas.toDataURL('image/png');
   const link = document.createElement('a');
   link.href = dataUrl;
-  link.download = `carte-${member.code_membre}.png`;
+  link.download = formatMemberCardFilename(member);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

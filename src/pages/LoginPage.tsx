@@ -3,6 +3,7 @@ import { MaterialIcon } from '../components/MaterialIcon';
 import {
   AccessRequestItem,
   AccessRequestStatus,
+  applyApprovedGymNameIfNeeded,
   fetchAccessStatus,
   getCachedDeviceApproved,
   getOrCreateDeviceId,
@@ -37,6 +38,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   // Formulaire de demande d'accès
   const [reqNom, setReqNom] = useState('');
+  const [reqNomGym, setReqNomGym] = useState('');
   const [reqTel, setReqTel] = useState('');
   const [reqEmail, setReqEmail] = useState('');
   const [reqPoste, setReqPoste] = useState('Caissier / Réception');
@@ -71,8 +73,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         setGateEnabled(res.gateEnabled);
         setAccessStatus(res.status);
         setAccessRequest(res.request);
+        if (res.status === 'approved' && res.request) {
+          await applyApprovedGymNameIfNeeded(res.request);
+        }
         if (res.request) {
           setReqNom((prev) => prev || res.request?.nomComplet || '');
+          setReqNomGym((prev) => prev || res.request?.nomGym || '');
           setReqTel((prev) => prev || res.request?.telephone || '');
           setReqEmail((prev) => prev || res.request?.email || '');
           setReqPoste((prev) => prev || res.request?.posteSouhaite || 'Caissier / Réception');
@@ -111,6 +117,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       const res = await submitAccessRequest({
         deviceId,
         nomComplet: reqNom.trim(),
+        nomGym: reqNomGym.trim(),
         telephone: reqTel.trim(),
         email: reqEmail.trim(),
         posteSouhaite: reqPoste,
@@ -119,6 +126,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       setGateEnabled(res.gateEnabled);
       setAccessStatus(res.status);
       setAccessRequest(res.request);
+      if (res.status === 'approved' && res.request) {
+        await applyApprovedGymNameIfNeeded(res.request);
+      }
       setEditingRequest(false);
     } catch (err) {
       setReqError(err instanceof Error ? err.message : 'Envoi de la demande impossible.');
@@ -247,7 +257,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 </p>
                 {accessRequest && (
                   <p className="text-xs font-mono-num pt-1 border-t border-amber-500/20">
-                    {accessRequest.nomComplet} · {accessRequest.telephone} · {accessRequest.posteSouhaite}
+                    {accessRequest.nomComplet}
+                    {accessRequest.nomGym ? ` · ${accessRequest.nomGym}` : ''} ·{' '}
+                    {accessRequest.telephone} · {accessRequest.posteSouhaite}
                   </p>
                 )}
               </div>
@@ -343,17 +355,31 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Téléphone *
+                    Nom du gym / de la salle *
                   </label>
                   <input
-                    type="tel"
+                    type="text"
                     required
-                    value={reqTel}
-                    onChange={(e) => setReqTel(e.target.value)}
-                    placeholder="ex. +509 3700 0000"
+                    value={reqNomGym}
+                    onChange={(e) => setReqNomGym(e.target.value)}
+                    placeholder="ex. Tet Dlo Fitness"
                     className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Téléphone *
+                </label>
+                <input
+                  type="tel"
+                  required
+                  value={reqTel}
+                  onChange={(e) => setReqTel(e.target.value)}
+                  placeholder="ex. +509 3700 0000"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#0d0f14] border border-slate-300 dark:border-[#262b38] text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">

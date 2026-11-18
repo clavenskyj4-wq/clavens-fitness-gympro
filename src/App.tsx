@@ -3,7 +3,11 @@ import { AppUpdateBanner } from './components/AppUpdateBanner';
 import { MaterialIconSprite } from './components/MaterialIcon';
 import { Navbar } from './components/Navbar';
 import { ConfirmModal, ToastContainer, ToastItem } from './components/ui';
-import { fetchAccessStatus, getOrCreateDeviceId } from './lib/accessControl';
+import {
+  applyApprovedGymNameIfNeeded,
+  fetchAccessStatus,
+  getOrCreateDeviceId,
+} from './lib/accessControl';
 import {
   canAccessRoute,
   clearSession,
@@ -215,6 +219,9 @@ export default function App() {
     const deviceId = getOrCreateDeviceId();
     fetchAccessStatus(deviceId)
       .then((res) => {
+        if (res.status === 'approved' && res.request) {
+          void applyApprovedGymNameIfNeeded(res.request);
+        }
         if (res.gateEnabled && res.status !== 'approved') {
           clearSession();
           setUser(null);
