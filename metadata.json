@@ -1,0 +1,6 @@
+{
+  "name": "GymPro",
+  "description": "Application PWA complète de gestion de salle de sport 100 % hors ligne avec synchronisation Google Sheets (HTG / USD, Haïti).",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

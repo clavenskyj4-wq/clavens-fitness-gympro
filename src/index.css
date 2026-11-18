@@ -1,0 +1,384 @@
+@import "@fontsource/poppins/600.css";
+@import "@fontsource/poppins/700.css";
+@import "@fontsource/montserrat/600.css";
+@import "@fontsource/montserrat/700.css";
+@import "@fontsource/montserrat/800.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --gp-bg: #f8fafc;
+  --gp-surface: #ffffff;
+  --gp-surface-alt: #f1f5f9;
+  --gp-border: #e2e8f0;
+  --gp-text: #0f172a;
+  --gp-text-muted: #475569;
+  --gp-accent: #ea580c;
+  --gp-accent-hover: #c2410c;
+  --gp-success: #16a34a;
+  --gp-danger: #dc2626;
+  --gp-warning: #d97706;
+}
+
+.dark {
+  --gp-bg: #0d0f14;
+  --gp-surface: #151821;
+  --gp-surface-alt: #1c202b;
+  --gp-border: #262b38;
+  --gp-text: #f8fafc;
+  --gp-text-muted: #94a3b8;
+  --gp-accent: #f97316;
+  --gp-accent-hover: #ea580c;
+  --gp-success: #22c55e;
+  --gp-danger: #ef4444;
+  --gp-warning: #f59e0b;
+}
+
+/* Palettes de couleurs configurables */
+:root[data-palette="emerald"] {
+  --color-orange-400: #34d399;
+  --color-orange-500: #10b981;
+  --color-orange-600: #059669;
+  --color-orange-700: #047857;
+  --color-orange-950: #022c22;
+  --gp-accent: #059669;
+  --gp-accent-hover: #047857;
+}
+
+:root[data-palette="cobalt"] {
+  --color-orange-400: #60a5fa;
+  --color-orange-500: #3b82f6;
+  --color-orange-600: #2563eb;
+  --color-orange-700: #1d4ed8;
+  --color-orange-950: #172554;
+  --gp-accent: #2563eb;
+  --gp-accent-hover: #1d4ed8;
+}
+
+:root[data-palette="crimson"] {
+  --color-orange-400: #f87171;
+  --color-orange-500: #ef4444;
+  --color-orange-600: #dc2626;
+  --color-orange-700: #b91c1c;
+  --color-orange-950: #450a0a;
+  --gp-accent: #dc2626;
+  --gp-accent-hover: #b91c1c;
+}
+
+:root[data-palette="gold"] {
+  --color-orange-400: #fbbf24;
+  --color-orange-500: #f59e0b;
+  --color-orange-600: #d97706;
+  --color-orange-700: #b45309;
+  --color-orange-950: #451a03;
+  --gp-accent: #d97706;
+  --gp-accent-hover: #b45309;
+}
+
+@layer base {
+  html {
+    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    scroll-behavior: smooth;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: "Poppins", system-ui, -apple-system, sans-serif;
+  }
+
+  .font-brand {
+    font-family: "Montserrat", "Poppins", system-ui, sans-serif;
+  }
+
+  .font-mono-num {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Info-bulle CSS accessible sur les boutons munis de data-tooltip */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  z-index: 60;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+/* Animations géométriques légères du Hero (CSS pur, sans surcharge) */
+@keyframes gp-float-slow {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(0, -14px, 0) rotate(4deg);
+  }
+}
+
+@keyframes gp-float-reverse {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(0, 12px, 0) rotate(-3deg);
+  }
+}
+
+.gp-shape-float {
+  animation: gp-float-slow 9s ease-in-out infinite;
+}
+
+.gp-shape-float-reverse {
+  animation: gp-float-reverse 11s ease-in-out infinite;
+}
+
+/* Apparition douce au scroll pilotée par IntersectionObserver */
+.gp-reveal {
+  opacity: 0;
+  transform: translate3d(0, 16px, 0);
+  transition: opacity 420ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.gp-reveal.is-visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+/* Animation en courant sinusoïdal / spirale du nom du gym dans la Navbar */
+@keyframes gp-sine-spiral {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+    color: inherit;
+  }
+  25% {
+    transform: translate3d(0.6px, -3.5px, 0) rotate(-3.5deg) scale(1.06);
+    color: var(--color-orange-500);
+    text-shadow: 0 2px 10px rgba(249, 115, 22, 0.3);
+  }
+  50% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+    color: inherit;
+  }
+  75% {
+    transform: translate3d(-0.6px, 3px, 0) rotate(3.5deg) scale(0.96);
+    color: var(--color-orange-400);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+    color: inherit;
+  }
+}
+
+@keyframes gp-brand-halo-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.16);
+    opacity: 0.85;
+  }
+}
+
+@keyframes gp-sine-wave-flow {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+.gp-brand-halo {
+  animation: gp-brand-halo-pulse 2.8s ease-in-out infinite;
+  background: radial-gradient(circle, var(--color-orange-500) 0%, transparent 72%);
+}
+
+.gp-brand-title {
+  color: #0f172a;
+}
+
+.dark .gp-brand-title {
+  color: #ffffff;
+}
+
+.gp-sine-char {
+  display: inline-block;
+  will-change: transform, color;
+  transform-origin: center center;
+  animation: gp-sine-spiral 2.6s ease-in-out infinite;
+  animation-delay: calc(var(--char-i, 0) * -0.15s);
+}
+
+.group:hover .gp-sine-char {
+  animation-duration: 1.7s;
+}
+
+.gp-sine-wave-track {
+  position: relative;
+  height: 7px;
+  overflow: hidden;
+}
+
+.gp-sine-wave-svg {
+  width: 200%;
+  height: 100%;
+  color: var(--color-orange-500);
+  animation: gp-sine-wave-flow 2.4s linear infinite;
+}
+
+/* Barre de défilement horizontale visible et fluide dans la barre de navigation */
+.gp-navbar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(234, 88, 12, 0.7) rgba(148, 163, 184, 0.18);
+}
+
+.dark .gp-navbar-scroll {
+  scrollbar-color: rgba(249, 115, 22, 0.75) rgba(255, 255, 255, 0.09);
+}
+
+.gp-navbar-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.gp-navbar-scroll::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.18);
+  border-radius: 9999px;
+}
+
+.dark .gp-navbar-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.gp-navbar-scroll::-webkit-scrollbar-thumb {
+  background: var(--gp-accent);
+  border-radius: 9999px;
+}
+
+.gp-navbar-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--gp-accent-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .gp-shape-float,
+  .gp-shape-float-reverse,
+  .gp-brand-halo,
+  .gp-sine-char,
+  .gp-sine-wave-svg {
+    animation: none !important;
+  }
+  .gp-sine-char {
+    transform: none !important;
+    text-shadow: none !important;
+  }
+  .gp-reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+}
+
+.gp-print-portal {
+  display: none;
+}
+
+/* Règles d'impression : Reçu 80mm, A4, Carte de membre, Rapports PDF */
+@media print {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  @page {
+    margin: 10mm;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  body.gp-print-active #root {
+    display: none !important;
+  }
+
+  body.gp-print-active .gp-print-portal {
+    display: flex !important;
+    align-items: flex-start;
+    justify-content: center;
+    width: 100% !important;
+    padding: 8mm 0 !important;
+    background: #ffffff !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .print-area-thermal {
+    width: 76mm !important;
+    max-width: 76mm !important;
+    margin: 0 auto !important;
+    padding: 4mm !important;
+    font-size: 11px !important;
+    color: #000000 !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .print-area-a4 {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 12mm !important;
+    color: #000000 !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .print-area-card {
+    width: 92mm !important;
+    max-width: 92mm !important;
+    min-height: 56mm !important;
+    margin: 0 auto !important;
+    box-shadow: none !important;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+}
