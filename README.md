@@ -36,7 +36,10 @@ ces trois variables, puis redéployez. Ne publiez pas ces valeurs dans GitHub. L
 dans [.env.example](./.env.example).
 
 Les demandes reçues par QR restent en attente jusqu’à leur approbation. Après approbation, elles
-sont importées dans **Membres** pour terminer l’inscription et choisir un forfait. Le relais utilise
+deviennent actives et apparaissent dans **Comptes adhérents du lien** : vous pouvez y suspendre ou
+réactiver leur accès sans supprimer leur dossier. Le changement de mot de passe Super Admin est
+disponible dans **Sécurité du Super Admin**; il est stocké sous forme hachée et remplace le mot de
+passe initial configuré dans l’environnement. Le relais utilise
 le fichier `.gympro-relay-state.json`. Sur Render, montez un disque persistant sur `/var/data` et
 définissez `GYMPRO_RELAY_STATE_FILE=/var/data/.gympro-relay-state.json` pour conserver les demandes
-lors des redémarrages et redéploiements.
+lors des redémarrages et redéploiements, ainsi que le nouveau mot de passe et les statuts des membres.

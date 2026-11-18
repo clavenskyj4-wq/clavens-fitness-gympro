@@ -21,7 +21,7 @@ interface RelayForfaitSummary {
   duree_jours: number;
 }
 
-interface RelayPendingMember {
+interface RelayMember {
   id: string;
   code_membre: string;
   nom: string;
@@ -37,7 +37,7 @@ interface RelayPendingMember {
   objectif: string;
   notes_sante: string;
   date_inscription: string;
-  statut: 'en_attente';
+  statut: 'actif' | 'suspendu' | 'en_attente';
   coach_id: string;
   tarif_coach: number;
   created_at: string;
@@ -52,8 +52,10 @@ interface RelayState {
   apps_script_url: string;
   apps_script_key: string;
   forfaits: RelayForfaitSummary[];
-  pendingMembers: RelayPendingMember[];
-  approvedMembers: RelayPendingMember[];
+  pendingMembers: RelayMember[];
+  approvedMembers: RelayMember[];
+  linkedMembers: RelayMember[];
+  superAdminPasswordHash: string;
 }
 
 function loadRelayState(): RelayState {
@@ -66,6 +68,8 @@ function loadRelayState(): RelayState {
     forfaits: [],
     pendingMembers: [],
     approvedMembers: [],
+    linkedMembers: [],
+    superAdminPasswordHash: '',
   };
   try {
     if (fs.existsSync(RELAY_STATE_FILE)) {
@@ -76,6 +80,9 @@ function loadRelayState(): RelayState {
         forfaits: Array.isArray(parsed.forfaits) ? parsed.forfaits : [],
         pendingMembers: Array.isArray(parsed.pendingMembers) ? parsed.pendingMembers : [],
         approvedMembers: Array.isArray(parsed.approvedMembers) ? parsed.approvedMembers : [],
+        linkedMembers: Array.isArray(parsed.linkedMembers) ? parsed.linkedMembers : [],
+        superAdminPasswordHash:
+          typeof parsed.superAdminPasswordHash === 'string' ? parsed.superAdminPasswordHash : '',
       };
     }
   } catch {
@@ -91,7 +98,7 @@ function persistRelayState(): void {
 }
 
 async function pushRelayMemberToSheets(
-  payload: RelayPendingMember
+  payload: RelayMember
 ): Promise<boolean> {
   if (!relayState.apps_script_url || !relayState.apps_script_key) return false;
   try {
@@ -115,6 +122,22 @@ async function pushRelayMemberToSheets(
   } catch {
     return false;
   }
+}
+
+function hashSuperAdminPassword(password: string, salt = crypto.randomBytes(16).toString('hex')): string {
+  const hash = crypto
+    .scryptSync(password, salt, 64, { N: 32768, maxmem: 64 * 1024 * 1024 })
+    .toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifySuperAdminPassword(password: string, storedHash: string): boolean {
+  const [salt, expectedHash, extra] = storedHash.split(':');
+  if (!salt || !expectedHash || extra) return false;
+  const actualHash = crypto
+    .scryptSync(password, salt, 64, { N: 32768, maxmem: 64 * 1024 * 1024 })
+    .toString('hex');
+  return safeStringEquals(actualHash, expectedHash);
 }
 
 const SUPER_ADMIN_SESSION_SECRET =
@@ -259,7 +282,7 @@ async function startServer() {
 
       const configuredUsername = process.env.GYMPRO_SUPER_ADMIN_USER?.trim();
       const configuredPassword = process.env.GYMPRO_SUPER_ADMIN_PASSWORD;
-      if (!configuredUsername || !configuredPassword) {
+      if (!configuredUsername || (!configuredPassword && !relayState.superAdminPasswordHash)) {
         res.status(503).json({
           ok: false,
           error: 'Accès super admin non configuré sur le serveur.',
@@ -269,10 +292,10 @@ async function startServer() {
 
       const username = String(req.body?.username || '').trim();
       const password = String(req.body?.password || '');
-      if (
-        !safeStringEquals(username.toLowerCase(), configuredUsername.toLowerCase()) ||
-        !safeStringEquals(password, configuredPassword)
-      ) {
+      const passwordValid = relayState.superAdminPasswordHash
+        ? verifySuperAdminPassword(password, relayState.superAdminPasswordHash)
+        : Boolean(configuredPassword) && safeStringEquals(password, configuredPassword || '');
+      if (!safeStringEquals(username.toLowerCase(), configuredUsername.toLowerCase()) || !passwordValid) {
         const current =
           attempt && attempt.resetAt > now
             ? attempt
@@ -306,7 +329,54 @@ async function startServer() {
         ok: true,
         pending: relayState.pendingMembers,
         approved: relayState.approvedMembers,
+        members: relayState.linkedMembers,
       });
+  });
+
+  app.post('/api/super-admin/password', (req, res) => {
+    if (!isSuperAdminRequest(req.header('authorization'))) {
+      res.status(401).json({ ok: false, error: 'Authentification super admin requise.' });
+      return;
+    }
+
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+    const currentPasswordValid = relayState.superAdminPasswordHash
+      ? verifySuperAdminPassword(currentPassword, relayState.superAdminPasswordHash)
+      : Boolean(process.env.GYMPRO_SUPER_ADMIN_PASSWORD) &&
+        safeStringEquals(currentPassword, process.env.GYMPRO_SUPER_ADMIN_PASSWORD || '');
+
+    if (!currentPasswordValid) {
+      res.status(400).json({ ok: false, error: 'Le mot de passe actuel est incorrect.' });
+      return;
+    }
+    if (newPassword.length < 12) {
+      res.status(400).json({
+        ok: false,
+        error: 'Le nouveau mot de passe doit contenir au moins 12 caractères.',
+      });
+      return;
+    }
+    if (newPassword === currentPassword) {
+      res.status(400).json({
+        ok: false,
+        error: 'Choisissez un nouveau mot de passe différent de l’actuel.',
+      });
+      return;
+    }
+
+    const previousHash = relayState.superAdminPasswordHash;
+    try {
+      relayState.superAdminPasswordHash = hashSuperAdminPassword(newPassword);
+      persistRelayState();
+      res.json({ ok: true });
+    } catch (error) {
+      relayState.superAdminPasswordHash = previousHash;
+      res.status(500).json({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Impossible d’enregistrer le mot de passe.',
+      });
+    }
   });
 
   app.post('/api/super-admin/requests/:id/:decision', async (req, res) => {
@@ -318,6 +388,7 @@ async function startServer() {
     const { id, decision } = req.params;
     const previousPending = relayState.pendingMembers;
     const previousApproved = relayState.approvedMembers;
+    const previousLinked = relayState.linkedMembers;
     try {
       const pendingIndex = relayState.pendingMembers.findIndex((member) => member.id === id);
       const approvedIndex = relayState.approvedMembers.findIndex((member) => member.id === id);
@@ -372,9 +443,25 @@ async function startServer() {
           res.json({ ok: true });
           return;
         }
+        const member: RelayMember = {
+          ...relayState.approvedMembers[approvedIndex],
+          statut: 'actif',
+          updated_at: new Date().toISOString(),
+        };
+        if (!(await pushRelayMemberToSheets(member)) && relayState.apps_script_url && relayState.apps_script_key) {
+          res.status(502).json({
+            ok: false,
+            error: 'Approbation non terminée : impossible de mettre à jour Google Sheets. Réessayez.',
+          });
+          return;
+        }
         relayState.approvedMembers = relayState.approvedMembers.filter((item) => item.id !== id);
+        relayState.linkedMembers = [
+          member,
+          ...relayState.linkedMembers.filter((item) => item.id !== id),
+        ];
         persistRelayState();
-        res.json({ ok: true });
+        res.json({ ok: true, member });
         return;
       }
 
@@ -382,6 +469,7 @@ async function startServer() {
     } catch (error) {
       relayState.pendingMembers = previousPending;
       relayState.approvedMembers = previousApproved;
+      relayState.linkedMembers = previousLinked;
       res.status(500).json({
         ok: false,
         error: error instanceof Error ? error.message : 'Impossible d’enregistrer la décision.',
@@ -389,8 +477,57 @@ async function startServer() {
     }
   });
 
+  app.post('/api/super-admin/members/:id/status', async (req, res) => {
+    if (!isSuperAdminRequest(req.header('authorization'))) {
+      res.status(401).json({ ok: false, error: 'Authentification super admin requise.' });
+      return;
+    }
+    const member = relayState.linkedMembers.find((item) => item.id === req.params.id);
+    if (!member) {
+      res.status(404).json({ ok: false, error: 'Membre introuvable dans les inscriptions du lien.' });
+      return;
+    }
+    const statut = req.body?.statut;
+    if ((statut !== 'actif' && statut !== 'suspendu') || member.statut === 'en_attente') {
+      res.status(400).json({ ok: false, error: 'Statut de membre invalide.' });
+      return;
+    }
+
+    const updatedMember: RelayMember = {
+      ...member,
+      statut,
+      updated_at: new Date().toISOString(),
+    };
+    if (
+      relayState.apps_script_url &&
+      relayState.apps_script_key &&
+      !(await pushRelayMemberToSheets(updatedMember))
+    ) {
+      res.status(502).json({
+        ok: false,
+        error: 'Statut non modifié : impossible de mettre à jour Google Sheets. Réessayez.',
+      });
+      return;
+    }
+
+    const previousMembers = relayState.linkedMembers;
+    try {
+      relayState.linkedMembers = relayState.linkedMembers.map((item) =>
+        item.id === updatedMember.id ? updatedMember : item
+      );
+      persistRelayState();
+      res.json({ ok: true, member: updatedMember });
+    } catch (error) {
+      relayState.linkedMembers = previousMembers;
+      res.status(500).json({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Impossible d’enregistrer le statut.',
+      });
+    }
+  });
+
   app.post('/api/public-registration/submit', async (req, res) => {
-    let previousPending: RelayPendingMember[] | undefined;
+    let previousPending: RelayMember[] | undefined;
     try {
       const b = (req.body || {}) as Record<string, unknown>;
       const prenom = String(b.prenom || '').trim();
@@ -416,7 +553,7 @@ async function startServer() {
         ? `[Forfait souhaité : ${forfaitSouhaite}]${notesBase ? ` ${notesBase}` : ''}`
         : notesBase;
 
-      const member: RelayPendingMember = {
+      const member: RelayMember = {
         id: crypto.randomUUID(),
         code_membre: codeMembre,
         nom,

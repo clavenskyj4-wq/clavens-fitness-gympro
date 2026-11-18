@@ -5,6 +5,7 @@ const SUPER_ADMIN_TOKEN_KEY = 'gympro_super_admin_token';
 export interface SuperAdminRequests {
   pending: Membre[];
   approved: Membre[];
+  members: Membre[];
 }
 
 async function request<T>(
@@ -51,6 +52,27 @@ export function clearSuperAdminToken(): void {
 
 export async function getSuperAdminRequests(token: string): Promise<SuperAdminRequests> {
   return request<SuperAdminRequests>('/requests', token);
+}
+
+export async function updateLinkedMemberStatus(
+  token: string,
+  memberId: string,
+  statut: 'actif' | 'suspendu'
+): Promise<Membre> {
+  const result = await request<{ member: Membre }>(
+    `/members/${encodeURIComponent(memberId)}/status`,
+    token,
+    { statut }
+  );
+  return result.member;
+}
+
+export async function changeSuperAdminPassword(
+  token: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  await request('/password', token, { currentPassword, newPassword });
 }
 
 export async function decideSuperAdminRequest(
