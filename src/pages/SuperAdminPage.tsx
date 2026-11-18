@@ -8,6 +8,7 @@ import {
   setCachedDeviceApproved,
   setSuperAdminToken,
 } from '../lib/accessControl';
+import { getGymConfig } from '../lib/db';
 
 interface SuperAdminPageProps {
   gymName: string;
@@ -154,6 +155,29 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
         setSmtpConfigured(Boolean(data.smtpConfigured));
         setAppsScriptConfigured(Boolean(data.appsScriptConfigured));
         setEmailLogs(Array.isArray(data.emailLogs) ? data.emailLogs : []);
+
+        if (!data.appsScriptConfigured) {
+          getGymConfig()
+            .then(async (localCfg) => {
+              if (localCfg.apps_script_url.trim() && localCfg.apps_script_key.trim()) {
+                const syncRes = await fetch('/api/public-registration/config', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    nom_gym: localCfg.nom_gym,
+                    adresse: localCfg.adresse,
+                    telephone: localCfg.telephone,
+                    apps_script_url: localCfg.apps_script_url,
+                    apps_script_key: localCfg.apps_script_key,
+                  }),
+                });
+                if (syncRes.ok) {
+                  setAppsScriptConfigured(true);
+                }
+              }
+            })
+            .catch(() => {});
+        }
       } catch (err) {
         onNotify(
           'error',
@@ -837,6 +861,20 @@ export const SuperAdminPage: React.FC<SuperAdminPageProps> = ({
               </button>
             </div>
           </div>
+
+          {!smtpConfigured && !appsScriptConfigured && (
+            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-800 dark:text-amber-200 space-y-1">
+              <p className="font-semibold">
+                Relais d’envoi email non encore activé sur le serveur
+              </p>
+              <p className="opacity-90">
+                Pour recevoir les emails sur {notificationEmail}, ajoutez{' '}
+                <code className="font-mono-num font-semibold">SMTP_USER</code> +{' '}
+                <code className="font-mono-num font-semibold">SMTP_PASS</code> (mot de passe d’application Gmail) dans les variables d’environnement Render, ou mettez à jour votre script Google Apps Script avec le fichier{' '}
+                <code className="font-mono-num font-semibold">public/apps-script/Code.gs</code>.
+              </p>
+            </div>
+          )}
 
           {emailLogs.length > 0 && (
             <div className="pt-3 border-t border-slate-200 dark:border-[#262b38] space-y-1.5">

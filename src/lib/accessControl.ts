@@ -82,18 +82,62 @@ export function setSuperAdminToken(token: string): void {
   }
 }
 
+async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  retries = 2
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(input, { ...init, signal: controller.signal });
+      window.clearTimeout(timeoutId);
+      if (res.status >= 502 && res.status <= 504 && attempt < retries) {
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      window.clearTimeout(timeoutId);
+      lastError = err;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+  const msg = lastError instanceof Error ? lastError.message : '';
+  if (/abort/i.test(msg)) {
+    throw new Error('Le serveur met du temps à répondre (démarrage en cours). Veuillez réessayer.');
+  }
+  throw new Error(
+    'Connexion au serveur momentanément indisponible. Vérifiez votre connexion internet ou réessayez dans quelques secondes.'
+  );
+}
+
 export async function fetchAccessStatus(deviceId: string): Promise<AccessStatusResponse> {
-  const res = await fetch(
+  const res = await fetchWithRetry(
     `/api/access/status?deviceId=${encodeURIComponent(deviceId)}`,
     { cache: 'no-store' }
   );
   if (!res.ok) {
     throw new Error('Impossible de vérifier le statut d’autorisation.');
   }
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('Réponse serveur inattendue (redémarrage en cours). Réessayez dans quelques secondes.');
+  }
   const data = (await res.json()) as AccessStatusResponse;
   if (!data.gateEnabled || data.status === 'approved') {
     setCachedDeviceApproved(true);
-  } else if (data.status === 'rejected' || data.status === 'revoked' || data.status === 'pending' || data.status === 'none') {
+  } else if (
+    data.status === 'rejected' ||
+    data.status === 'revoked' ||
+    data.status === 'pending' ||
+    data.status === 'none'
+  ) {
     setCachedDeviceApproved(false);
   }
   return data;
@@ -107,11 +151,15 @@ export async function submitAccessRequest(payload: {
   posteSouhaite: string;
   note: string;
 }): Promise<AccessStatusResponse> {
-  const res = await fetch('/api/access/request', {
+  const res = await fetchWithRetry('/api/access/request', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('Le serveur redémarre ou est en veille. Veuillez réessayer dans 5 secondes.');
+  }
   const data = (await res.json()) as AccessStatusResponse & { error?: string };
   if (!res.ok || !data.ok) {
     throw new Error(data.error || 'Impossible d’envoyer la demande.');

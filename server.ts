@@ -138,8 +138,8 @@ function loadRelayState(): RelayState {
     nom_gym: 'TET DLO FITNESS',
     adresse: '',
     telephone: '',
-    apps_script_url: '',
-    apps_script_key: '',
+    apps_script_url: (process.env.APPS_SCRIPT_URL || '').trim(),
+    apps_script_key: (process.env.APPS_SCRIPT_KEY || '').trim(),
     forfaits: [],
     pendingMembers: [],
     accessGateEnabled: true,
@@ -257,44 +257,61 @@ async function sendApprovalNotificationEmail(params: {
   }
 
   const smtpUser = (process.env.SMTP_USER || process.env.GMAIL_USER || '').trim();
-  const smtpPass = (process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || '').trim();
+  const rawSmtpPass = (process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || '').trim();
   const smtpHost = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
-  const smtpPort = Number(process.env.SMTP_PORT || 465);
+  const smtpPass =
+    smtpHost.includes('gmail') && rawSmtpPass.replace(/\s+/g, '').length === 16
+      ? rawSmtpPass.replace(/\s+/g, '')
+      : rawSmtpPass;
+  const parsedPort = Number(process.env.SMTP_PORT || 465);
+  const smtpPort = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 465;
 
   if (smtpUser && smtpPass) {
-    try {
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: { user: smtpUser, pass: smtpPass },
-      });
-      await transporter.sendMail({
-        from: `"${relayState.nom_gym || 'GymPro'}" <${smtpUser}>`,
-        to,
-        subject: params.subject,
-        text: params.textBody,
-        html: params.htmlBody,
-      });
-      return recordEmailLog({
-        to,
-        subject: params.subject,
-        channel: 'smtp',
-        status: 'sent',
-        detail: `Envoyé via SMTP (${smtpHost}) à ${to}.`,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Erreur SMTP inconnue.';
-      // Continue vers Google Apps Script si disponible
-      if (!relayState.apps_script_url || !relayState.apps_script_key) {
+    const portsToTry = smtpHost.includes('gmail')
+      ? Array.from(new Set([smtpPort, smtpPort === 465 ? 587 : 465]))
+      : [smtpPort];
+    let lastSmtpErr = '';
+
+    for (const port of portsToTry) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port,
+          secure: port === 465,
+          requireTLS: port === 587,
+          auth: { user: smtpUser, pass: smtpPass },
+          connectionTimeout: 7000,
+          greetingTimeout: 7000,
+          socketTimeout: 10000,
+          tls: { minVersion: 'TLSv1.2' },
+        });
+        await transporter.sendMail({
+          from: `"${relayState.nom_gym || 'GymPro'}" <${smtpUser}>`,
+          to,
+          subject: params.subject,
+          text: params.textBody,
+          html: params.htmlBody,
+        });
         return recordEmailLog({
           to,
           subject: params.subject,
           channel: 'smtp',
-          status: 'failed',
-          detail: `Échec SMTP : ${msg}`,
+          status: 'sent',
+          detail: `Envoyé via SMTP (${smtpHost}:${port}) à ${to}.`,
         });
+      } catch (err) {
+        lastSmtpErr = err instanceof Error ? err.message : 'Erreur SMTP inconnue.';
       }
+    }
+
+    if (!relayState.apps_script_url || !relayState.apps_script_key) {
+      return recordEmailLog({
+        to,
+        subject: params.subject,
+        channel: 'smtp',
+        status: 'failed',
+        detail: `Échec SMTP : ${lastSmtpErr}`,
+      });
     }
   }
 
@@ -539,6 +556,7 @@ function getBuildVersionToken(): string {
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '15mb' }));
 
   app.get('/api/app-version', (_req, res) => {
@@ -577,29 +595,56 @@ async function startServer() {
     });
   });
 
-  app.post('/api/access/request', (req, res) => {
-    const b = (req.body || {}) as Record<string, unknown>;
-    const deviceId = String(b.deviceId || '').trim().slice(0, 128);
-    const nomComplet = String(b.nomComplet || '').trim().slice(0, 120);
-    const telephone = String(b.telephone || '').trim().slice(0, 40);
-    const email = String(b.email || '').trim().slice(0, 120);
-    const posteSouhaite = String(b.posteSouhaite || 'Caissier / Réception').trim().slice(0, 80);
-    const note = String(b.note || '').trim().slice(0, 300);
+  app.post('/api/access/request', async (req, res) => {
+    try {
+      const b = (req.body || {}) as Record<string, unknown>;
+      const deviceId = String(b.deviceId || '').trim().slice(0, 128);
+      const nomComplet = String(b.nomComplet || '').trim().slice(0, 120);
+      const telephone = String(b.telephone || '').trim().slice(0, 40);
+      const email = String(b.email || '').trim().slice(0, 120);
+      const posteSouhaite = String(b.posteSouhaite || 'Caissier / Réception').trim().slice(0, 80);
+      const note = String(b.note || '').trim().slice(0, 300);
 
-    if (!deviceId || !nomComplet || !telephone) {
-      res.status(400).json({
-        ok: false,
-        error: 'Identifiant appareil, nom complet et téléphone sont obligatoires.',
-      });
-      return;
-    }
+      if (!deviceId || !nomComplet || !telephone) {
+        res.status(400).json({
+          ok: false,
+          error: 'Identifiant appareil, nom complet et téléphone sont obligatoires.',
+        });
+        return;
+      }
 
-    const now = new Date().toISOString();
-    const userAgent = String(req.headers['user-agent'] || '').slice(0, 180);
-    const existing = relayState.accessRequests.find((r) => r.deviceId === deviceId);
+      const now = new Date().toISOString();
+      const userAgent = String(req.headers['user-agent'] || '').slice(0, 180);
+      const existing = relayState.accessRequests.find((r) => r.deviceId === deviceId);
 
-    if (existing) {
-      if (existing.status === 'approved') {
+      if (existing) {
+        if (existing.status === 'approved') {
+          res.json({
+            ok: true,
+            gateEnabled: relayState.accessGateEnabled,
+            status: existing.status,
+            request: existing,
+          });
+          return;
+        }
+        existing.nomComplet = nomComplet;
+        existing.telephone = telephone;
+        existing.email = email;
+        existing.posteSouhaite = posteSouhaite;
+        existing.note = note;
+        existing.userAgent = userAgent || existing.userAgent;
+        existing.status = 'pending';
+        existing.updatedAt = now;
+        persistRelayState();
+
+        const origin = getRequestOrigin(req);
+        const superAdminUrl = origin ? `${origin}/?superadmin=1` : '';
+        const mail = buildAccessRequestEmailContent(existing, superAdminUrl, true);
+        await Promise.race([
+          sendApprovalNotificationEmail(mail),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+        ]);
+
         res.json({
           ok: true,
           gateEnabled: relayState.accessGateEnabled,
@@ -608,60 +653,49 @@ async function startServer() {
         });
         return;
       }
-      existing.nomComplet = nomComplet;
-      existing.telephone = telephone;
-      existing.email = email;
-      existing.posteSouhaite = posteSouhaite;
-      existing.note = note;
-      existing.userAgent = userAgent || existing.userAgent;
-      existing.status = 'pending';
-      existing.updatedAt = now;
+
+      const record: AccessRequestRecord = {
+        id: crypto.randomUUID(),
+        deviceId,
+        nomComplet,
+        telephone,
+        email,
+        posteSouhaite,
+        note,
+        userAgent,
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+      };
+      relayState.accessRequests.unshift(record);
+      if (relayState.accessRequests.length > 500) {
+        relayState.accessRequests = relayState.accessRequests.slice(0, 500);
+      }
       persistRelayState();
 
       const origin = getRequestOrigin(req);
       const superAdminUrl = origin ? `${origin}/?superadmin=1` : '';
-      const mail = buildAccessRequestEmailContent(existing, superAdminUrl, true);
-      void sendApprovalNotificationEmail(mail);
+      const mail = buildAccessRequestEmailContent(record, superAdminUrl, false);
+      await Promise.race([
+        sendApprovalNotificationEmail(mail),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+      ]);
 
       res.json({
         ok: true,
         gateEnabled: relayState.accessGateEnabled,
-        status: existing.status,
-        request: existing,
+        status: record.status,
+        request: record,
       });
-      return;
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Erreur serveur lors de l’envoi de la demande d’approbation.',
+      });
     }
-
-    const record: AccessRequestRecord = {
-      id: crypto.randomUUID(),
-      deviceId,
-      nomComplet,
-      telephone,
-      email,
-      posteSouhaite,
-      note,
-      userAgent,
-      status: 'pending',
-      createdAt: now,
-      updatedAt: now,
-    };
-    relayState.accessRequests.unshift(record);
-    if (relayState.accessRequests.length > 500) {
-      relayState.accessRequests = relayState.accessRequests.slice(0, 500);
-    }
-    persistRelayState();
-
-    const origin = getRequestOrigin(req);
-    const superAdminUrl = origin ? `${origin}/?superadmin=1` : '';
-    const mail = buildAccessRequestEmailContent(record, superAdminUrl, false);
-    void sendApprovalNotificationEmail(mail);
-
-    res.json({
-      ok: true,
-      gateEnabled: relayState.accessGateEnabled,
-      status: record.status,
-      request: record,
-    });
   });
 
   app.post('/api/super-admin/login', (req, res) => {
