@@ -294,18 +294,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         <div className="relative z-10 max-w-[1200px] mx-auto px-4 sm:px-6 lg:px-8 w-full">
           <div className="max-w-3xl">
             <p className="text-sm font-medium text-orange-400 tracking-wide">
-              Application PWA pour salles de sport en Haïti · 100 % hors ligne
+              Solution professionnelle pour salles de sport · Opérationnelle en continu
             </p>
             <h1
               className="mt-4 font-brand font-extrabold tracking-tight text-white leading-[1.08]"
               style={{ fontSize: 'clamp(2.25rem, 4.5vw, 3.85rem)', textWrap: 'balance' }}
             >
-              Pilotez votre salle de sport sans jamais dépendre d’internet
+              Pilotez votre salle de sport avec maîtrise et continuité
             </h1>
             <p className="mt-5 text-base sm:text-lg text-slate-300 leading-relaxed max-w-2xl">
-              Inscrivez vos membres, encaissez vos abonnements en HTG ou USD (Espèces, MonCash,
-              NatCash), imprimez vos reçus 80 mm et contrôlez l’accès à l’entrée. Dès que la
-              connexion revient, vos données se synchronisent avec Google Sheets.
+              Centralisez la gestion des membres, les encaissements en HTG ou USD (Espèces,
+              MonCash, NatCash), l’impression des reçus 80 mm et le contrôle d’accès à l’accueil,
+              avec synchronisation automatique vers Google Sheets.
             </p>
 
             <div className="mt-8 flex flex-wrap items-center gap-4">
